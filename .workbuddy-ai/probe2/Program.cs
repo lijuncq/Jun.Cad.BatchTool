@@ -39,6 +39,18 @@ namespace Probe
                 return;
             }
 
+            if (args.Length > 1 && args[0] == "sortprobe")
+            {
+                SortProbe.Run(args[1], args.Length > 2 ? args[2] : null);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "textscan")
+            {
+                TextScan.Run(args[1]);
+                return;
+            }
+
             if (args.Length > 1 && args[0] == "dimmask")
             {
                 DimMask.Run(args[1]);

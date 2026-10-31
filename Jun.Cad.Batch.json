@@ -181,6 +181,10 @@
         "MaskMinOccludedRatio": 0.05,
         "MaskPaddingRatio": 0.15,
         "MaskLayer": "_MASK",
+        // 把"盖住文字的填充"送到绘制顺序最底层。遮罩跟着文字的绘制位置走，
+        // 填充如果画在文字之上（很多图就是这样，排序表里填充排在最后），
+        // 遮罩会被整块盖住——图上看着和"没加遮罩"一模一样，而数据里明明有。
+        "MaskSendHatchToBack": true,
         // 标注文字：All=所有标注 / ExplicitOnly=只处理手工改过文字的 / Off=不处理
         "DimensionTextMode": "All",
         // 标注没有原生遮罩（DIMTFILL 这个库版本写不进 DWG），只能把 Wipeout 塞进标注的

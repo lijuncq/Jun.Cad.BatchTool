@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using ACadSharp;
 using ACadSharp.Entities;
+using ACadSharp.Objects;
 using ACadSharp.Tables;
 using CSMath;
 using Jun.Cad.Batch.Config;
@@ -52,6 +53,7 @@ namespace Jun.Cad.Batch.Rules
             int maxMasks = RuleContext.Int(action.MaxMasksPerDrawing, 2000);
             string dimMode = NormalizeDimensionMode(action.DimensionTextMode);
             string dimMaskMode = NormalizeDimensionMaskMode(action.DimensionMaskMode);
+            bool sendHatchToBack = RuleContext.Bool(action.MaskSendHatchToBack, true);
 
             // ---- 只有"新建遮罩实体"这条路才需要 Wipeout 探测 ----
             string requested = NormalizeMaskMode(action.MaskMode);
@@ -111,6 +113,8 @@ namespace Jun.Cad.Batch.Rules
             int maskedMText = 0;
             int maskedDimension = 0;
             int maskedEntity = 0;
+            int movedToBack = 0;
+            var hatchesToBack = new List<Hatch>();
 
             var bySpace = new Dictionary<BlockRecord, List<MaskTarget>>();
             foreach (MaskTarget target in targets)
@@ -175,7 +179,29 @@ namespace Jun.Cad.Batch.Rules
                         {
                             maskedEntity++;
                         }
+
+                        // 遮罩要看得见，前提是遮挡物排在文字**下面**。
+                        // 很多图的填充是后画的（排序表里排在最后 = 画在最上面），
+                        // 这时遮罩（在标注 *D 块里，随块一起）被填充整块盖住，
+                        // 图上看着就像"根本没加遮罩"。
+                        if (sendHatchToBack)
+                        {
+                            foreach (int idx in occluders.Query(target.Rect))
+                            {
+                                var hatch = occluders.EntityOf(idx) as Hatch;
+                                if (hatch != null)
+                                {
+                                    hatchesToBack.Add(hatch);
+                                }
+                            }
+                        }
                     }
+                }
+
+                if (sendHatchToBack && hatchesToBack.Count > 0)
+                {
+                    movedToBack += PushHatchesToBack(context, result, space, hatchesToBack);
+                    hatchesToBack.Clear();
                 }
             }
 
@@ -195,6 +221,11 @@ namespace Jun.Cad.Batch.Rules
                 if (maskedEntity > 0)
                 {
                     parts.Add((wantWipeout ? "Wipeout" : "Solid") + " " + maskedEntity);
+                }
+
+                if (movedToBack > 0)
+                {
+                    parts.Add("填充置后 " + movedToBack);
                 }
 
                 result.AddNote(string.Format("共为 {0} 处文字加了遮罩（{1}）。", created, string.Join(" / ", parts)));
@@ -584,6 +615,39 @@ namespace Jun.Cad.Batch.Rules
         ///
         /// 结果封顶 1.0。阈值默认 0.05，即"一条线穿过"或"5% 面积被盖"就加遮罩。
         /// </summary>
+        /// <summary>
+        /// 把"盖住被遮罩文字的填充"送到绘制顺序最底层。
+        ///
+        /// 为什么必须做：遮罩要么是 MTEXT 背景、要么在标注的 *D 块里，都跟着文字的绘制位置走。
+        /// 填充如果排在文字之后（排序表里 sort handle 更大 = 画在上面），遮罩就被填充整块盖住，
+        /// 图上看着和"根本没加遮罩"一模一样，而数据里明明有——这个坑排查了很久。
+        ///
+        /// **命名是反的**：这个库的 <c>MoveToTop</c> 才等于 AutoCAD 的"置后"
+        /// （排序表按 sort handle 升序绘制，MoveToTop 给的是最小 handle，所以画在最下面）；
+        /// <c>MoveToBottom</c> 反而把它推到最上层。实测：源图填充 handle 21540/21541 排在表尾 = 画在最上面；
+        /// 调 MoveToTop 之后变成 C1A6/C1A7 排在表头 = 画在最下面。
+        /// </summary>
+        private static int PushHatchesToBack(
+            RuleContext context, RuleExecutionResult result, BlockRecord space, List<Hatch> hatches)
+        {
+            SortEntitiesTable table = space.SortEntitiesTable;
+            if (table == null)
+            {
+                context.Log.Warn("该空间没有排序表（SORTENTSTABLE），无法调整绘制顺序；遮罩可能被填充盖住。");
+                return 0;
+            }
+
+            int moved = 0;
+            foreach (Hatch hatch in hatches)
+            {
+                table.MoveToTop(hatch);
+                moved++;
+            }
+
+            context.Log.Detail(string.Format("已把 {0} 个遮挡文字的填充送到最底层（绘制顺序）", moved));
+            return moved;
+        }
+
         private static double ComputeOcclusion(Bounds2d rect, BoundsIndex index)
         {
             if (rect.Area <= 0)

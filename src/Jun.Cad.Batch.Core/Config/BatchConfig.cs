@@ -697,6 +697,17 @@ namespace Jun.Cad.Batch.Config
         [JsonProperty("MaskIgnoreBlockBounds")]
         public bool? MaskIgnoreBlockBounds { get; set; }
 
+        /// <summary>
+        /// 加遮罩时把"盖住文字的填充"送到绘制顺序最底层（默认 true）。
+        ///
+        /// 遮罩要么是 MTEXT 背景、要么在标注的 *D 块里，都跟着文字的绘制位置走。
+        /// 填充如果排在文字之后（排序表里 sort handle 更大 = 画在上面），
+        /// 遮罩会被填充整块盖住——图上看着和"没加遮罩"一模一样，而数据里明明有。
+        /// </summary>
+        [RuleField(Label = "填充置后", Editor = RuleFieldEditor.Toggle, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 645, Help = "默认是：把盖住文字的填充送到绘制顺序最底层。关掉时若填充画在文字之上，遮罩会被填充盖住、看不见")]
+        [JsonProperty("MaskSendHatchToBack")]
+        public bool? MaskSendHatchToBack { get; set; }
+
         /// <summary>遮罩放到哪个图层（不存在会自动建）。</summary>
         [RuleField(Label = "遮罩图层", Editor = RuleFieldEditor.Text, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 660, ValidateAs = RuleFieldValidateAs.Layer, Help = "默认 _MASK；不存在时自动创建")]
         [JsonProperty("MaskLayer")]

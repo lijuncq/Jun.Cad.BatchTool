@@ -579,6 +579,7 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 | `MaskPaddingRatio` | 留白比例 | Double | × 字高 | 默认 0.15 |
 | `MaskPadding` | 留白（绝对） | Double | 图纸单位 |  |
 | `MaskOnlyWhenOccluded` | 仅在有遮挡时添加 | Toggle | — | 默认是：先判断文字矩形被压住多少，再决定加不加 |
+| `MaskSendHatchToBack` | 填充置后 | Toggle | — | 默认是：把盖住文字的填充送到绘制顺序最底层。**关掉时若填充画在文字之上，遮罩会被填充整块盖住、图上完全看不见**（数据里有，只是被压住） |
 | `MaskMinOccludedRatio` | 遮挡阈值 | Double | 0~1 | 文字矩形被压住的面积占比达到该值才算遮挡，默认 0.05 |
 | `MaskIgnoreBlockBounds` | 忽略块参照包络 | Toggle | — | 默认是（忽略）：块参照包络往往远大于实际图形，用它判遮挡会大面积误判 |
 | `MaskLayer` | 遮罩图层 | Text | — | 默认 _MASK；不存在时自动创建 |
@@ -825,6 +826,7 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 | 双线缝宽 | `2_SECONDARY_ESCAPE_ROUTE` → `JIS_LC_8A` | 线距 3 → 3（不变）、比例 1 → 0.384615（反算）、缝宽 0.5 → 0.272（提示一次） |
 | 打印样式模式 | `accoreconsole` 读 `(getvar "PSTYLEMODE")` | 源图 1；修复前输出 **0**（CTB 图被当成 STB，打印样式表选不到）；修复后 **1**；STB 样本 0 → 0 不误伤 |
 | 标注文字遮罩 | `TextMask` + `EntityTypes:["MTEXT"]` + `DimensionTextMode:All` | 匹配数 218 = 只有 MTEXT，**20 个 DIMENSION 从未被扫描**；改为不写 EntityTypes 后匹配 238，`BlockInternal` 在 20 个 `*D` 块里各生成 1 个 Wipeout |
+| 遮罩被填充盖住 | 30250-001，`SortEntitiesTable` 5572 条 | 源图排序表末尾是 `Hatch:21540/21541` = 填充画在最上层；遮罩在标注 `*D` 块里，随块一起被填充盖住。加 `MaskSendHatchToBack` 后输出表头变成 `Hatch:C19B…`，62 个填充被置后 |
 | 关掉保持线距 | 同图，`MatchSpacing=false` | 截图实测组对间距 33.5px/455 → 67px/348（归一化 **2.62×**），与 `7.8 ÷ 3 = 2.6` 吻合；日志告警"3 → 7.8（2.6 倍）" |
 | 关掉保持线距时"沿用原比例" | 源比例 75、线距 225 | 修前 `41=75` 但图案线 7.8（实际密 29 倍）；修后 `41=75`、图案线 585，两者一致 |
 
