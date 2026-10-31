@@ -1,0 +1,204 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ============================================================================
+    Jun.AutoCAD.BatchTool —— AutoCAD / 中望CAD 配置驱动的批量处理插件
+
+    目标宿主：
+      * AutoCAD 2021 / 2022 / 2023 / 2024  -> .NET Framework 4.8   (TargetFramework = net48)
+      * AutoCAD 2025                       -> .NET 8 (Windows)     (TargetFramework = net8.0-windows)
+      * 中望CAD ZWCAD 2020                  -> .NET Framework 4.8   (TargetFramework = net48)
+                                            托管 API 为 ZwSoft.ZwCAD.*（ZwManaged.dll +
+                                            ZwDatabaseMgd.dll），与 Autodesk.AutoCAD.* 一一对应
+
+    用法：
+      dotnet build                                        # 默认按本机 AutoCAD 2025 编译
+      dotnet build -p:AcadVersion=2024                    # 编译 2021~2024 版本（需安装对应 AutoCAD）
+      dotnet build -p:AcadVersion=2024 -p:AcadDir="D:\Autodesk\AutoCAD 2024"
+      dotnet build -p:AcadVersion=ZWCAD2020               # 编译中望CAD 2020 版（输出到 bin\Debug\ZWCAD2020）
+      dotnet build -p:AcadVersion=ZWCAD2020 -p:AcadDir="E:\ZWCAD 2020"
+
+    说明：代码基线刻意停留在 AutoCAD 2021 级别的托管 API 上，未使用任何高版本
+          专有方法，因此同一份源码可直接在 .NET Framework 与 .NET 8 下编译；
+          ZWCAD 2020 的托管 API 是 Autodesk 那套的同构实现，差异点用 #if ZWCAD 局部收口
+          （见 Core/Jun.AutoCAD.HostCompat.cs 与各处的条件编译块）。
+    ============================================================================
+  -->
+
+  <PropertyGroup>
+    <!-- 目标宿主版本（主版本号，或 ZWCAD2020）。可用命令行覆盖：-p:AcadVersion=2024 -->
+    <AcadVersion Condition="'$(AcadVersion)' == ''">2025</AcadVersion>
+
+    <!-- 中望CAD 走同一份源码，只是引用的托管程序集与命名空间不同 -->
+    <IsZwCad Condition="'$(AcadVersion)' == 'ZWCAD2020'">true</IsZwCad>
+    <IsZwCad Condition="'$(IsZwCad)' == ''">false</IsZwCad>
+
+    <!-- 安装目录，默认取标准安装路径 -->
+    <AcadDir Condition="'$(AcadDir)' == '' And '$(IsZwCad)' == 'true'">E:\ZWCAD 2020</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And '$(IsZwCad)' != 'true' And '$(AcadVersion)' == '2025'">C:\Program Files\Autodesk\AutoCAD 2025</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And '$(IsZwCad)' != 'true' And '$(AcadVersion)' == '2024'">C:\Program Files\Autodesk\AutoCAD 2024</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And '$(IsZwCad)' != 'true' And '$(AcadVersion)' == '2023'">C:\Program Files\Autodesk\AutoCAD 2023</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And '$(IsZwCad)' != 'true' And '$(AcadVersion)' == '2022'">C:\Program Files\Autodesk\AutoCAD 2022</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And '$(IsZwCad)' != 'true' And '$(AcadVersion)' == '2021'">C:\Program Files\Autodesk\AutoCAD 2021</AcadDir>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsZwCad)' == 'true'">
+    <!-- ZWCAD 2020 的托管程序集是 .NET Framework 4.0 目标；用 net48 编译可在 CLR4 上直接加载 -->
+    <TargetFramework>net48</TargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsZwCad)' != 'true'">
+    <!-- 2025 起 AutoCAD 托管程序集切换到 .NET 8；此前均为 .NET Framework 4.8 -->
+    <TargetFramework Condition="'$(AcadVersion)' &gt;= '2025'">net8.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(AcadVersion)' &lt; '2025'">net48</TargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!--
+      中间目录必须按宿主分开。
+      本工程把 AppendTargetFrameworkToOutputPath 关掉了，OutputPath 里没有 TFM 子目录，
+      obj 下的 FileListAbsolute.txt 也会跟着塌成同一个文件。两个目标交替构建时，
+      IncrementalClean 会读到"上一份清单"，把另一个目标的产物当成"本次不再生成的文件"删掉
+      （实测：先建 ZWCAD 版，再建 AutoCAD 版，bin\Debug\ZWCAD2020\ 会被清空，且增量构建不会补回来）。
+      分开中间目录后，两套清单互不覆盖。
+    -->
+    <IntermediateOutputPath Condition="'$(IsZwCad)' == 'true'">obj\ZWCAD2020\$(Configuration)\</IntermediateOutputPath>
+    <IntermediateOutputPath Condition="'$(IsZwCad)' != 'true'">obj\$(TargetFramework)\$(Configuration)\</IntermediateOutputPath>
+
+    <!--
+      本项目未使用任何 WPF 类型（只用数据库与编辑器 API），
+      因此不打开 UseWPF：可减少对 Microsoft.WindowsDesktop.App 的依赖面，
+      也让生成目录更干净。若后续要加 PaletteSet 面板，再打开此开关。
+    -->
+    <LangVersion>latest</LangVersion>
+    <!-- AutoCAD / ZWCAD 都只有 x64 版本；平台名保持 AnyCPU，仅把输出位宽固定为 x64 -->
+    <PlatformTarget>x64</PlatformTarget>
+
+    <AssemblyName>Jun.AutoCAD.BatchTool</AssemblyName>
+    <RootNamespace>Jun.AutoCAD</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- 输出固定到 bin\<Configuration>\，不追加 TFM / 平台子目录，方便 NETLOAD 时直接引用 -->
+    <OutputPath Condition="'$(IsZwCad)' != 'true'">bin\$(Configuration)\</OutputPath>
+    <!-- ZWCAD 版单独输出，避免与 AutoCAD 版互相覆盖（两个宿主的 DLL 不能混用） -->
+    <OutputPath Condition="'$(IsZwCad)' == 'true'">bin\$(Configuration)\ZWCAD2020\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <AppendPlatformToOutputPath>false</AppendPlatformToOutputPath>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <!--
+      AutoCAD 版的 Newtonsoft.Json 来自 AutoCAD 安装目录（Reference + Private=true，直接拷贝）；
+      ZWCAD 版走 PackageReference，必须让 lock 文件里的程序集也拷到输出目录，
+      否则 NETLOAD 时会因为找不到 Newtonsoft.Json 而加载失败。
+    -->
+    <CopyLocalLockFileAssemblies Condition="'$(IsZwCad)' == 'true'">true</CopyLocalLockFileAssemblies>
+    <CopyLocalLockFileAssemblies Condition="'$(IsZwCad)' != 'true'">false</CopyLocalLockFileAssemblies>
+
+    <!--
+      EnableDynamicLoading 是「被宿主进程动态加载的类库」专用开关，AutoCAD NETLOAD 正是这种场景。
+      打开后会额外生成 Jun.AutoCAD.BatchTool.runtimeconfig.json 与完整的 .deps.json，
+      宿主的 AssemblyLoadContext / AssemblyDependencyResolver 才能正确解析本插件的依赖。
+      缺少这两个文件时，.NET 8 版 AutoCAD 的 NETLOAD 往往只报一句「无法加载程序集」。
+      ZWCAD 2020 运行在 .NET Framework 4.8 上，不需要这两个文件。
+    -->
+    <EnableDynamicLoading Condition="'$(IsZwCad)' != 'true'">true</EnableDynamicLoading>
+
+    <!-- AutoCAD 托管程序集是强命名且不随插件分发，禁止拷贝到输出目录 -->
+    <NoWarn>$(NoWarn);MSB3277;CS1591</NoWarn>
+    <AcadVersionDefine Condition="'$(IsZwCad)' != 'true' And '$(AcadVersion)' &gt;= '2025'">ACAD2025_OR_LATER</AcadVersionDefine>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net48'">
+    <DefineConstants>$(DefineConstants);ACAD_NETFRAMEWORK</DefineConstants>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+
+  <!-- 中望CAD 分支：ZWCAD 常量驱动所有 #if 分支 -->
+  <PropertyGroup Condition="'$(IsZwCad)' == 'true'">
+    <DefineConstants>$(DefineConstants);ZWCAD</DefineConstants>
+  </PropertyGroup>
+
+  <!--
+    用户界面用 WinForms（不引 XAML，插件仍是单个 DLL）：
+      * net8.0-windows → UseWindowsForms 自动带上 Microsoft.WindowsDesktop.App 引用
+        （AutoCAD 2025 本身就加载了这个框架，acdbmgd.runtimeconfig.json 里可以看到）；
+      * net48 → 直接引用框架自带的 System.Windows.Forms。
+  -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <!-- AutoCAD 托管程序集：仅编译期引用，运行时由 acad.exe 提供 -->
+  <ItemGroup Condition="'$(IsZwCad)' != 'true'">
+    <Reference Include="acdbmgd">
+      <HintPath>$(AcadDir)\acdbmgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="acmgd">
+      <HintPath>$(AcadDir)\acmgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="accoremgd">
+      <HintPath>$(AcadDir)\accoremgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    中望CAD 2020 托管程序集（同样仅编译期引用，运行时由 ZWCAD.exe 提供）：
+      ZwDatabaseMgd.dll → ZwSoft.ZwCAD.DatabaseServices / Colors / Geometry / GraphicsInterface
+      ZwManaged.dll     → ZwSoft.ZwCAD.ApplicationServices / EditorInput / Runtime / Windows
+  -->
+  <ItemGroup Condition="'$(IsZwCad)' == 'true'">
+    <Reference Include="ZwDatabaseMgd">
+      <HintPath>$(AcadDir)\ZwDatabaseMgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ZwManaged">
+      <HintPath>$(AcadDir)\ZwManaged.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    JSON 反序列化：引用 AutoCAD 安装目录自带的 Newtonsoft.Json.dll（版本与 AutoCAD 完全一致），
+    并【拷贝到输出目录】（Private=true）。这样无论宿主的依赖解析走 deps.json 还是应用目录探测，
+    都能在插件目录找到它，避免 NETLOAD 时因依赖解析失败而"无法加载程序集"。
+    ZWCAD 安装目录不带 Newtonsoft.Json，走下面的 PackageReference 分支。
+  -->
+  <ItemGroup Condition="Exists('$(AcadDir)\Newtonsoft.Json.dll')">
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(AcadDir)\Newtonsoft.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('$(AcadDir)\Newtonsoft.Json.dll')">
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <!-- 示例配置随生成目录一起输出，便于直接 NETLOAD 试跑 -->
+  <ItemGroup>
+    <None Update="config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!--
+    测试工程放在 tests/ 下，但本工程在仓库根，默认的 **/*.cs 通配会把测试源码一起编进来
+    （xunit 的引用不存在，编译直接失败）。这里显式排除。
+  -->
+  <ItemGroup>
+    <Compile Remove="tests/**/*.cs" />
+  </ItemGroup>
+
+</Project>

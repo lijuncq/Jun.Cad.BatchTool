@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Jun.Cad.Batch.Win</RootNamespace>
+    <AssemblyName>Jun.Cad.Batch</AssemblyName>
+    <!-- 图标与 CLI 共用一份，避免两处各存一个版本号不同的 .ico -->
+    <ApplicationIcon>..\..\docs\icons\app.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Jun.Cad.Batch.Core\Jun.Cad.Batch.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    图标要嵌两份：
+      ApplicationIcon → 写进 exe 的 Win32 资源，资源管理器/任务栏固定项认的是它；
+      EmbeddedResource → 运行时读出来设给 Form.Icon。
+    只做前者的话，窗口类注册时 hIcon 为 NULL，标题栏与任务栏会退回系统默认图标
+    （实测：exe 里已经有图标了，标题栏还是"两个方块"的默认图）。
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\docs\icons\app.ico" LogicalName="Jun.Cad.Batch.app.ico" />
+  </ItemGroup>
+
+  <!-- 图案库 / 线型库与 CLI 共用同一份，不复制第二套文件 -->
+  <ItemGroup>
+    <None Include="..\Jun.Cad.Batch.Cli\Resources\**\*.*"
+          Link="Resources\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

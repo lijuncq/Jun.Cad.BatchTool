@@ -1,0 +1,42 @@
+{
+  "Version": 1,
+  "ContinueOnError": true,
+  "Verbose": true,
+  "Rules": [
+    {
+      "Name": "图框必填属性",
+      "Type": "AttributeAudit",
+      "Enabled": true,
+      "Filter": {
+        "SourceBlockName": "TB-*"
+      },
+      "Action": {
+        "RequiredAttributeTags": [ "DWG_NO", "TITLE", "REV", "DATE" ]
+      }
+    },
+    {
+      "Name": "标注文字与测量值核对",
+      "Type": "DimTextAudit",
+      "Enabled": true,
+      "Filter": {
+        "Scope": "ModelOnly"
+      },
+      "Action": {
+        "AuditTolerance": 0.5,
+        "AuditTolerancePercent": 0.2
+      }
+    },
+    {
+      "Name": "图层归并（只并层，不删层）",
+      "Type": "LayerMap",
+      "Enabled": false,
+      "Filter": {
+        "Scope": "ModelOnly"
+      },
+      "Action": {
+        "LayerMappings": [ "0-PIPE*=PIPE", "MISC_PIP*=PIPE-DIM" ],
+        "LayerMapDeleteEmpty": false
+      }
+    }
+  ]
+}

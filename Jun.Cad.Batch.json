@@ -1,0 +1,359 @@
+{
+  // ==========================================================================
+  // Jun.Cad.Batch 默认配置
+  // 命令：Jun.Cad.Batch.Cli run --config Jun.Cad.Batch.json --input <图纸目录>
+  //
+  // 这份文件在程序首次启动时自动生成到 exe 所在目录（原文件不存在时）。
+  // 里面每种规则各有一条示例，**全部 Enabled=false**——直接点「执行」不会改任何东西，
+  // 需要哪条就把它的 Enabled 改成 true，并按自己图纸的名字改 Filter。
+  //
+  // 规则按数组顺序执行：后一条规则看到的是前一条规则修改后的结果。
+  // 所有字段都是可选的；未写的字段使用默认值。字段说明见 README 第 5 节。
+  // ==========================================================================
+  "Version": 1,
+
+  // Sequential（默认，也是唯一真实语义）：顺序执行，没有事务
+  // Isolated / Parallel：会降级为 Sequential 并告警——没有事务就没有"逐条回滚"，
+  //                      回滚边界退化为"整个文件"（失败则不写盘，源文件不动）
+  "ExecutionMode": "Sequential",
+
+  // 单条规则中止后是否继续执行后续规则
+  "ContinueOnError": true,
+
+  // 日志文件：留空 = 输出目录\Logs\batch-yyyyMMdd-HHmmss.log；填 "none" 关闭文件日志
+  "LogFile": "",
+
+  // 明细是否打到控制台（false 时只写日志文件）
+  "Verbose": true,
+
+  // 单条规则最多打多少条明细到控制台，避免刷屏
+  "MaxEditorDetailLines": 100,
+
+  // 图形测量单位（$MEASUREMENT）：决定 AutoCAD 按哪份图案库解析填充图案名。
+  //   0 = acad.pat（英制），1 = acadiso.pat（公制）。
+  // Auto（默认）：只有写进图的图案名在 acad.pat 里不存在时才改成公制。
+  //   JIS 系列（JIS_LC_8A / JIS_LC_20 / JIS_RC_15 …）只在 acadiso.pat 里，
+  //   不改的话填充画得出来，但属性面板的预定义图案列表里找不到这个名字。
+  // Keep=不改（会告警）；Metric / English=强制。
+  // 只影响图案/线型库的选择，不动 INSUNITS，也不动任何已有实体的几何。
+  "MeasurementUnits": "Auto",
+
+  "Rules": [
+    // ---------------------------------------------------------------- 块
+    {
+      "Name": "把旧图框块换成新图框块",
+      "Type": "BlockReplace",
+      "Enabled": false,
+      "Filter": {
+        // 动态块按"动态块定义名"匹配，不是 *U 匿名名
+        "SourceBlockName": "A1_TITLE_OLD"
+      },
+      "Action": {
+        // 目标块必须已存在于当前图纸，工具不会跨图导入
+        "TargetBlockName": "A1_TITLE_NEW",
+        // 动态块默认跳过：替换后动态参数值会丢，需在 CAD 里重设
+        "AllowDynamicBlock": false,
+        // 按 Tag 名称把源块属性值搬到目标块
+        "MigrateAttributes": true
+      }
+    },
+    {
+      "Name": "图框块归到 TK-FRAME 图层",
+      "Type": "BlockLayerChange",
+      "Enabled": false,
+      "Filter": {
+        "SourceBlockNames": ["A1_TITLE_OLD", "A1_TITLE_NEW", "TB-2025"]
+      },
+      "Action": {
+        "TargetLayer": "TK-FRAME",
+        "CreateIfMissing": true,
+        "LayerColorIndex": 7,
+        "LayerLinetype": "Continuous",
+        "LayerLineWeight": 25,
+        // 只改块参照的图层，块里的线还是原图层——图上看起来"没变"
+        "AlsoMoveBlockContent": true,
+        // 属性是独立实体，各自带图层；不写时跟随上一项
+        "AlsoMoveAttributes": true
+      }
+    },
+
+    // ---------------------------------------------------------------- 图层
+    {
+      "Name": "红色线归到 EQUIPMENT 图层",
+      "Type": "EntityLayerChange",
+      "Enabled": false,
+      // 至少要有 1 个过滤条件，否则规则会主动中止（避免整张图被挪走）
+      "Filter": {
+        "EntityTypes": ["LINE", "LWPOLYLINE", "CIRCLE"],
+        // 1=红 2=黄 3=绿 4=青 5=蓝 6=洋红 7=白/黑 256=随层 0=随块
+        "ColorIndex": 1
+      },
+      "Action": {
+        "TargetLayer": "EQUIPMENT",
+        "CreateIfMissing": true,
+        "LayerColorIndex": 3,
+        "LayerLineWeight": 25,
+        "LayerPlottable": true
+      }
+    },
+    {
+      "Name": "图层归并（只并层，不删层）",
+      "Type": "LayerMap",
+      "Enabled": false,
+      "Filter": {
+        "Scope": "ModelOnly"
+      },
+      "Action": {
+        // 左边是通配符模式，右边是目标图层；按数组顺序先匹配先生效
+        "LayerMappings": ["0-PIPE*=PIPE", "MISC_PIP*=PIPE-DIM"],
+        // true = 并完之后把空出来的图层删掉
+        "LayerMapDeleteEmpty": false
+      }
+    },
+
+    // ---------------------------------------------------------------- 文字
+    {
+      "Name": "文字统一到 GB 字体",
+      "Type": "TextFontChange",
+      "Enabled": false,
+      "Filter": {
+        // 不写 EntityTypes 时默认处理 TEXT/MTEXT/ATTDEF/ATTRIB/DIMENSION/ACAD_TABLE/...
+        "TextStyleName": "Standard"
+      },
+      "Action": {
+        "TargetTextStyle": "GB_STANDARD",
+        "FontFileName": "gbenor.shx",
+        "BigFont": "gbcbig.shx",
+        "WidthFactor": 1.0,
+        "ObliqueAngle": 0,
+        // 替换 MText 内容里的 \F 内联字体码
+        "HandleMTextInlineFont": true,
+        // 标注文字样式挂在标注样式上，一并改过去
+        "AlsoUpdateDimensionStyle": true
+      }
+    },
+    {
+      "Name": "统一字高 3.5",
+      "Type": "TextHeightChange",
+      "Enabled": false,
+      "Filter": {
+        // 写操作规则至少要有 1 个过滤条件，否则执行时会主动中止（避免整张图的字高被改掉）
+        "EntityTypes": ["TEXT", "MTEXT"]
+      },
+      "Action": {
+        "Height": 3.5,
+        // MText 行距系数（0.25~4.0）；不写则只改字高，不动系数
+        "LineSpacingFactor": 1.0,
+        "AlsoUpdateDimensionStyle": true
+      }
+    },
+    {
+      "Name": "替换文字：P30 → P40",
+      "Type": "TextReplace",
+      "Enabled": false,
+      "Filter": {
+        "Scope": "ModelOnly"
+      },
+      "Action": {
+        // Contains=包含即替换；Exact=整串相等；Regex=正则
+        "MatchMode": "Contains",
+        "SearchText": "P30",
+        "Replacement": "P40",
+        "CaseSensitive": false
+      }
+    },
+    {
+      "Name": "给被遮挡的文字加遮罩",
+      "Type": "TextMask",
+      "Enabled": false,
+      "Filter": {
+        "Scope": "ModelOnly",
+        "EntityTypes": ["MTEXT"]
+      },
+      "Action": {
+        // Auto=MTEXT 用原生背景填充、TEXT/ATTRIB 重建带遮罩的文字
+        "MaskMode": "Auto",
+        // 只给"确实被别的对象压住"的文字加，避免整张图铺满遮罩
+        "MaskOnlyWhenOccluded": true,
+        "MaskMinOccludedRatio": 0.05,
+        "MaskPaddingRatio": 0.15,
+        "MaskLayer": "_MASK"
+      }
+    },
+
+    // ---------------------------------------------------------------- 线型 / 线宽 / 随层
+    {
+      "Name": "辅助线改为虚线",
+      "Type": "EntityLinetypeChange",
+      "Enabled": false,
+      "Filter": {
+        "LayerName": "AUX-LINE"
+      },
+      "Action": {
+        // 线型不存在时会从 .lin 建出来（需把 acadiso.lin 放到 Resources 目录）
+        "LinetypeName": "DASHED"
+      }
+    },
+    {
+      "Name": "所有对象线宽置随层",
+      "Type": "EntityLineweightChange",
+      "Enabled": false,
+      "Filter": {
+        "EntityTypes": ["LINE", "LWPOLYLINE", "ARC"]
+      },
+      "Action": {
+        // 打开后忽略 LineWeight
+        "ForceByLayer": true
+      }
+    },
+    {
+      "Name": "外来图纸特性规范化（置随层）",
+      "Type": "SetByLayer",
+      "Enabled": false,
+      "Filter": {
+        "LayerNames": ["EQUIPMENT", "PIPING", "TEXT"]
+      },
+      "Action": {
+        "ForceColorByLayer": true,
+        "ForceLinetypeByLayer": true,
+        "ForceLineWeightByLayer": true,
+        // 未建模打印样式名，打开会告警并跳过
+        "ForcePlotStyleByLayer": false
+      }
+    },
+
+    // ---------------------------------------------------------------- 标注
+    {
+      "Name": "标注统一样式",
+      "Type": "DimensionStyleChange",
+      "Enabled": false,
+      "Filter": {
+        // 不写时默认只看 DIMENSION
+        "DimensionStyleName": "Standard"
+      },
+      "Action": {
+        "TargetDimensionStyle": "GB_DIM",
+        "CreateIfMissing": true,
+        "ArrowSize": 2.5,
+        "TextHeight": 3.5
+      }
+    },
+    {
+      "Name": "标注文字与测量值核对（只报不改）",
+      "Type": "DimTextAudit",
+      "Enabled": false,
+      "Filter": {
+        "Scope": "ModelOnly"
+      },
+      "Action": {
+        // 绝对容差与百分比容差同时生效，任一满足即算通过
+        "AuditTolerance": 0.5,
+        "AuditTolerancePercent": 0.2
+      }
+    },
+
+    // ---------------------------------------------------------------- 图框 / 标题栏 / 布局
+    {
+      "Name": "图框必填属性检查（只报不改）",
+      "Type": "AttributeAudit",
+      "Enabled": false,
+      "Filter": {
+        "SourceBlockName": "TB-*"
+      },
+      "Action": {
+        "RequiredAttributeTags": ["DWG_NO", "TITLE", "REV", "DATE"]
+      }
+    },
+    {
+      "Name": "标题栏：图名取文件名、日期取今天",
+      "Type": "TitleBlockNormalize",
+      "Enabled": false,
+      "Filter": {
+        "SourceBlockName": "TB-*"
+      },
+      "Action": {
+        // {filename}=图纸文件名（不含扩展名）；{date}=yyyy-MM-dd；{layout}=布局名
+        "TitleBlockAttributeMap": ["TITLE={filename}", "DATE={date}"],
+        // true = 只在属性为空时才写，不覆盖已有内容
+        "TitleBlockOnlyIfEmpty": true
+      }
+    },
+    {
+      "Name": "布局改名 V-{n}",
+      "Type": "LayoutRename",
+      "Enabled": false,
+      "Action": {
+        // 左边通配符，右边目标名；{n} 按匹配顺序从 1 递增
+        "LayoutRenameMap": ["Layout*=V-{n}", "布局*=V-{n}", "Sheet*=S-{n}"]
+      }
+    },
+
+    // ---------------------------------------------------------------- 填充
+    {
+      "Name": "混凝土填充统一为 AR-CONC",
+      "Type": "HatchPatternChange",
+      "Enabled": false,
+      "Filter": {
+        "SourcePatternNames": ["ANSI31", "AR-CONC"]
+      },
+      "Action": {
+        // SOLID 表示纯色填充；填 TargetGradientName 则转渐变（优先于图案）
+        "TargetPatternName": "AR-CONC",
+        "PatternType": "PreDefined",
+        // 保持线距（默认开）：按"新图案基准线距 × 新比例 = 原线距"反算比例，
+        // 换图案而疏密不变。各图案基准线距差别很大（ANSI31=3.175、JIS_LC_8A=7.8、
+        // JIS_RC_20=20），关掉它又沿用原比例，画出来会突然变密或变疏。
+        "MatchSpacing": true,
+        // 显式指定比例后，MatchSpacing 不再生效（用户意图优先）
+        // "PatternScale": 1.0,
+        "PatternAngle": 0,
+        "HatchStyle": "Normal"
+      }
+    },
+
+    // ---------------------------------------------------------------- 清理与核对
+    {
+      "Name": "几何清理（零长线 / 空文字）",
+      "Type": "GeometryCleanup",
+      "Enabled": false,
+      "Filter": {
+        "Scope": "ModelOnly"
+      },
+      "Action": {
+        "CleanZeroLength": true,
+        "CleanEmptyText": true,
+        // 重复实体检测较慢，默认关
+        "CleanDuplicateEntities": false,
+        // true = 只统计不删除，先看会删掉什么
+        "CleanupDryRun": true
+      }
+    },
+    {
+      "Name": "材料表导出",
+      "Type": "BomSync",
+      "Enabled": false,
+      "Filter": {
+        "SourceBlockName": "BOM-*"
+      },
+      "Action": {
+        // 表格里这些 Tag 的列会被读出来
+        "BomColumnTags": ["NO", "NAME", "SPEC", "MAT", "QTY"],
+        // 相对输出目录的路径
+        "BomExportPath": "bom-export.csv"
+      }
+    },
+    {
+      "Name": "清理未使用对象",
+      "Type": "PurgeUnused",
+      "Enabled": false,
+      "Filter": {},
+      "Action": {
+        // 支持 Block/Layer/Linetype/TextStyle/DimStyle；
+        // RegApp/Group/MLeaderStyle 不支持（没有可靠的引用扫描入口）
+        "PurgeCategories": ["Block", "Layer", "Linetype", "TextStyle", "DimStyle"],
+        // 多轮迭代：处理"块定义删掉后图层才空出来"这类链式依赖
+        "PurgePasses": 3
+      }
+    }
+  ]
+}

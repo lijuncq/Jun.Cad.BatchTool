@@ -1,0 +1,29 @@
+{
+  "Version": 1,
+  "ExecutionMode": "Sequential",
+  "ContinueOnError": true,
+  "LogFile": "Logs/batch.log",
+  "Verbose": true,
+  "MaxEditorDetailLines": 50,
+
+  // JIS_LC_8A 只在 acadiso.pat 里存在。图形的 $MEASUREMENT=0 时 AutoCAD 会去
+  // acad.pat 里找这个名字，找不到——填充画得出来，但属性面板的预定义列表里没有它。
+  // Auto = 检测到这种情况就把 $MEASUREMENT 改成 1（公制）。
+  "MeasurementUnits": "Auto",
+
+  "Rules": [
+    {
+      "Name": "测试：把 2_SECONDARY_ESCAPE_ROUTE_-_TEST 改成 JIS_LC_8A",
+      "Type": "HatchPatternChange",
+      "Enabled": true,
+      "Filter": {
+        "SourcePatternName": "2_SECONDARY_ESCAPE_ROUTE_-_TEST"
+      },
+      "Action": {
+        "TargetPatternName": "JIS_LC_8A",
+        "MatchSpacing": true,
+        "PatternAngle": 0
+      }
+    }
+  ]
+}

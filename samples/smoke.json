@@ -1,0 +1,36 @@
+{
+  "Version": 1,
+  "ExecutionMode": "Sequential",
+  "ContinueOnError": true,
+  "LogFile": "Logs/smoke.log",
+  "Verbose": false,
+  "MaxEditorDetailLines": 5,
+  "Rules": [
+    {
+      "Name": "冒烟：CIRCLE 归到 TEST-CIRCLE 图层",
+      "Type": "EntityLayerChange",
+      "Enabled": true,
+      "Filter": { "EntityTypes": ["CIRCLE"] },
+      "Action": {
+        "TargetLayer": "TEST-CIRCLE",
+        "LayerColorIndex": 3,
+        "LayerLineWeight": 25,
+        "LayerLinetype": "Continuous"
+      }
+    },
+    {
+      "Name": "冒烟：所有 MTEXT 统一字高 3.0",
+      "Type": "TextHeightChange",
+      "Enabled": true,
+      "Filter": { "EntityTypes": ["MTEXT"] },
+      "Action": { "Height": 3.0 }
+    },
+    {
+      "Name": "冒烟：清理未使用对象",
+      "Type": "PurgeUnused",
+      "Enabled": true,
+      "Filter": {},
+      "Action": { "PurgePasses": 3 }
+    }
+  ]
+}

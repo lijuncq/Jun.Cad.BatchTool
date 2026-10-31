@@ -1,0 +1,38 @@
+;; 探针：把指定图案名的 HATCH 的图案定义组码原样倒出来
+(defun c:probe ( / ss n i e d out pair nm hit)
+  (setq out (open *out* "w"))
+  (setq ss (ssget "_X" '((0 . "HATCH"))))
+  (setq hit 0)
+  (if ss
+    (progn
+      (setq n (sslength ss) i 0)
+      (while (< i n)
+        (setq e (ssname ss i))
+        (setq d (entget e))
+        (setq nm (cdr (assoc 2 d)))
+        (if (and nm (= (strcase nm) (strcase *pat*)))
+          (progn
+            (setq hit (1+ hit))
+            (if (<= hit 2)
+              (progn
+                (write-line (strcat "### " nm) out)
+                (foreach pair d
+                  (if (member (car pair) '(2 41 52 70 71 78 53 43 44 45 46))
+                    (write-line (strcat (itoa (car pair)) "|" (vl-princ-to-string (cdr pair))) out)
+                  )
+                )
+                (write-line "---" out)
+              )
+            )
+          )
+        )
+        (setq i (1+ i))
+      )
+      (write-line (strcat "MATCHED=" (itoa hit)) out)
+    )
+    (write-line "NO-HATCH" out)
+  )
+  (close out)
+  (princ)
+)
+(c:probe)

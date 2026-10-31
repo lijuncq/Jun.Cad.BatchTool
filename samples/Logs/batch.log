@@ -1,0 +1,43 @@
+﻿[13:58:58] [===] jun-cad-batch（离线批量改图）
+[13:58:58] [信息] 配置文件：samples/hatch-jis_LC_8A.json
+[13:58:58] [信息] 待处理文件：1 个
+[13:58:58] [信息] 输出方式：写入目录 (输入目录)\output
+[13:58:58] [信息] 图案库：D:\Dev\CSharp\AutoCAD\Jun.AutoCAD.Batch\src\Jun.Cad.Batch.Cli\bin\Debug\net8.0\Resources\acadiso.pat
+[13:58:58] [===] 文件：KLD-ZHJT-PIP-LYT-2000ZZ-30250-003_B0_P50 CHEMICAL INJECTION & PRODUCED WATER - MODULE LAYOUT DRAWING.dwg
+[13:58:59] [信息] 版本：AC1027 (2013) → 输出 AC1027 (2013)
+[13:58:59] [警告] 读入告警 2 条：Warning: Unlisted object with DXF name SUN has been read as an UnknownNonGraphicalObject；Warning: ACadSharp.Tables.TextStyle table reference with handle:  | name:  not found for ACadSharp.Objects.TableStyle+CellStyle
+[13:58:59] [===] 开始执行批处理
+[13:58:59] [信息] 配置文件：samples/hatch-jis_LC_8A.json
+[13:58:59] [信息] 执行模式：Sequential（顺序执行，无事务）
+[13:58:59] [信息] 启用规则：1 条
+[13:58:59] [===] 规则：测试：把 2_SECONDARY_ESCAPE_ROUTE_-_TEST 改成 JIS_LC_8A（HatchPatternChange）
+[13:58:59] [明细] 目标图案「JIS_LC_8A」定义：2 条图案线。
+[13:58:59] [明细] 过滤条件：类型=HATCH
+[13:58:59] [明细] 目标：图案「JIS_LC_8A」(SolidFill)；比例 (保持)；角度 0°；间距 (保持)
+[13:58:59] [明细] 命中 130 个对象。
+[13:58:59] [信息]   匹配 0，改动 0，跳过 0，失败 0
+[13:58:59] [===] 批处理汇总
+[13:58:59] [信息] 规则                            匹配    改动    跳过    失败  耗时(ms)
+[13:58:59] [信息] 测试：把 2_SECONDARY_ESCAPE…       0       0       0       0         5
+[13:58:59] [信息] ----------------------------------------------------------------------
+[13:58:59] [信息] 合计                               0       0       0       0        18
+[13:58:59] [信息] 日志文件：D:\Dev\CSharp\AutoCAD\Jun.AutoCAD.Batch\samples\Logs/batch.log
+[13:58:59] [===] 本次没有任何对象被修改 —— 按下面几条排查
+[13:58:59] [信息] 1) Filter 里的名字必须与图纸一致：块名 / 图层名 / 文字样式名 / 填充图案名。
+[13:58:59] [信息]    示例配置用的是 A1_TITLE、EQUIPMENT 这类演示名字，图纸里没有就会 0 命中。
+[13:58:59] [信息] 2) 颜色索引：随层实体是 256；写 1 只会命中"显式设为红色"的实体，随层的红线不会命中。
+[13:58:59] [信息] 3) 规则是否被 Enabled=false 关闭（示例配置里大部分扩展规则默认关闭）。
+[13:58:59] [信息] 4) 对象是否在扫描范围内：Scope=ModelAndLayouts 会覆盖布局与块定义内部；
+[13:58:59] [信息]    Scope=Selection 在离线模式下不可用，会被降级为整张图。
+[13:58:59] [信息] 5) 目标不存在时规则会主动中止（如目标块/线型/图案未定义），原因见上面的"已中止"列表。
+[13:58:59] [信息] 6) 逐条明细在日志文件里。
+[13:58:59] [信息] 预览：将改动 0 处，无需改动 0 处，被挡住 0 处（其中降级 0 处）。
+[13:58:59] [===] 文件汇总
+[13:58:59] [信息] 文件                                    匹配    改动    跳过  状态      
+[13:58:59] [信息] KLD-ZHJT-PIP-LYT-2000ZZ-30250-003…         0       0       0  跳过      
+[13:58:59] [信息] ----------------------------------------------------------------------
+[13:58:59] [信息] 共 1 个文件，改动 0 处，失败 0 个，耗时 0.5s
+[13:58:59] [===] 差异预览
+[13:58:59] [信息] 共 0 行：将改动 0，无需改动 0，被挡住 0，其中降级 0。
+[13:58:59] [信息] 预览文件：C:\Users\lijun\Downloads\SampleDwg\output\preview-20261031-135859.md
+[13:58:59] [警告] 本次是 --preview：没有任何文件被写出。

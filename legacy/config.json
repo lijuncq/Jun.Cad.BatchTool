@@ -1,0 +1,237 @@
+{
+  // ==========================================================================
+  // Jun.AutoCAD.BatchTool 示例配置
+  // 命令：BATCHPROCESS   → 提示输入本文件路径（直接回车用默认路径）
+  // 规则按数组顺序执行：后一条规则看到的是前一条规则修改后的数据库状态。
+  // 字段说明见 README.md；所有字段都是可选的，未写的字段使用默认值。
+  // ==========================================================================
+  "Version": 1,
+
+  // Sequential（默认）：所有规则共用同一个事务，最后统一提交
+  // Isolated          ：每条规则独立事务并立即提交，单条失败可整体回滚
+  // Parallel          ：不支持（AutoCAD 数据库不支持并发写），会自动降级为 Isolated
+  "ExecutionMode": "Sequential",
+
+  // 单条规则异常时是否继续执行后续规则
+  "ContinueOnError": true,
+
+  // 日志文件：留空 = 本文件同目录\Logs\batch-yyyyMMdd-HHmmss.log；填 "none" 关闭文件日志
+  "LogFile": "",
+
+  // 命令行是否打印每条明细（false 时只打印统计，明细仍写入日志文件）
+  "Verbose": true,
+  "MaxEditorDetailLines": 100,
+
+  "Rules": [
+    {
+      "Name": "替换图框块",
+      "Type": "BlockReplace",
+      "Enabled": true,
+      "Filter": {
+        "SourceBlockName": "A1_TITLE",
+        // ModelAndLayouts（默认）/ ModelOnly / LayoutsOnly / Selection
+        "Scope": "ModelAndLayouts",
+        // 是否递归进入块定义内部（块中块）
+        "IncludeNestedBlocks": true,
+        "MaxNestingDepth": 8
+      },
+      "Action": {
+        "TargetBlockName": "A1_TITLE_NEW",
+        // 动态块边界：false 时遇到动态块直接跳过并记录警告
+        "AllowDynamicBlock": false,
+        // 属性块：按 Tag 名称迁移属性值
+        "MigrateAttributes": true
+      }
+    },
+    {
+      "Name": "图框块统一归层",
+      "Type": "BlockLayerChange",
+      "Enabled": false,
+      "Filter": {
+        // 指定一个块用 SourceBlockName，指定多个块用 SourceBlockNames（两者可叠加）
+        "SourceBlockNames": [ "A1_TITLE", "A2_TITLE" ],
+        // 可选：只处理当前还在某个图层上的这些块（留空 = 不论在哪层都归层）
+        "LayerName": "0"
+      },
+      "Action": {
+        "TargetLayer": "TK-FRAME",
+        // 目标图层不存在时按下面的默认特性自动创建
+        "CreateIfMissing": true,
+        "LayerColorIndex": 7,
+        "LayerLinetype": "Continuous",
+        "LayerLineWeight": 25,
+        // 新图层是否参与打印（默认 true；设为 false 适合辅助线/定位点图层）
+        "LayerPlottable": true,
+        // 块定义内部的对象（含嵌套块、属性定义 ATTDEF）是否一起归层，默认 true。
+        // 只挪块参照的话，块里画的东西仍留在原图层上——图上看起来"没改"
+        "AlsoMoveBlockContent": true
+        // 属性（ATTRIB）是独立实体、各有图层：不写时跟随上面的 AlsoMoveBlockContent（即一起归层）；
+        // 想让已有属性留在原图层，再补一行 "AlsoMoveAttributes": false
+      }
+    },
+    {
+      "Name": "设备图层归并",
+      "Type": "EntityLayerChange",
+      "Enabled": true,
+      "Filter": {
+        // DXF 实体类型名（不是 .NET 类名）
+        "EntityTypes": [ "LINE", "LWPOLYLINE", "CIRCLE" ],
+        // 颜色索引号：1=红 2=黄 3=绿 4=青 5=蓝 6=洋红 7=白/黑 256=随层
+        "ColorIndex": 1
+      },
+      "Action": {
+        "TargetLayer": "EQUIPMENT",
+        // 目标图层不存在时自动创建（继承下面的默认特性），而不是报错终止
+        "CreateIfMissing": true,
+        "LayerColorIndex": 3,
+        "LayerLinetype": "Continuous",
+        "LayerLineWeight": 25,
+        // 新图层是否参与打印（默认 true）
+        "LayerPlottable": true
+      }
+    },
+    {
+      "Name": "注释文字字体统一",
+      "Type": "TextFontChange",
+      "Enabled": true,
+      "Filter": {
+        "EntityTypes": [ "TEXT", "MTEXT" ],
+        "ColorIndex": 3
+      },
+      "Action": {
+        "TargetTextStyle": "GB_STANDARD",
+        "FontFileName": "gbenor.shx",
+        "BigFont": "gbcbig.shx",
+        // 宽度因子 / 倾斜角（度）
+        "WidthFactor": 1.0,
+        "ObliqueAngle": 0,
+        // 解析 MText 内容中的 \F 内联字体码
+        "HandleMTextInlineFont": true,
+        // 标注文字样式由标注样式控制，这里同步过去
+        "AlsoUpdateDimensionStyle": true
+      }
+    },
+    {
+      "Name": "红色细线统一为虚线",
+      "Type": "EntityLinetypeChange",
+      "Enabled": false,
+      "Filter": {
+        "EntityTypes": [ "LINE", "LWPOLYLINE" ],
+        "ColorIndex": 1
+      },
+      "Action": {
+        "LinetypeName": "DASHED",
+        "ForceByLayer": false
+      }
+    },
+    {
+      "Name": "轮廓线宽统一 0.35mm",
+      "Type": "EntityLineweightChange",
+      "Enabled": false,
+      "Filter": {
+        "EntityTypes": [ "LINE", "LWPOLYLINE", "CIRCLE", "ARC" ],
+        "ColorIndex": 7
+      },
+      "Action": {
+        // 单位 0.01mm：35 = 0.35mm；-1=ByLayer
+        "LineWeight": 35,
+        "ForceByLayer": false
+      }
+    },
+    {
+      "Name": "外来图纸特性置随层",
+      "Type": "SetByLayer",
+      "Enabled": false,
+      "Filter": {
+        "EntityTypes": [ "LINE", "LWPOLYLINE", "CIRCLE", "TEXT", "MTEXT" ]
+      },
+      "Action": {
+        "ForceColorByLayer": true,
+        "ForceLinetypeByLayer": true,
+        "ForceLineWeightByLayer": true,
+        "ForcePlotStyleByLayer": true
+      }
+    },
+    {
+      "Name": "标注样式统一",
+      "Type": "DimensionStyleChange",
+      "Enabled": false,
+      "Filter": {
+        "EntityTypes": [ "DIMENSION" ],
+        // 只处理当前使用该样式的标注（可留空）
+        "DimensionStyleName": "ISO-25"
+      },
+      "Action": {
+        "TargetDimensionStyle": "GB_DIM",
+        "CreateIfMissing": true,
+        "ArrowSize": 2.5,
+        "TextHeight": 3.5
+      }
+    },
+    {
+      "Name": "文字高度统一 3.5",
+      "Type": "TextHeightChange",
+      "Enabled": false,
+      "Filter": {
+        "EntityTypes": [ "TEXT", "MTEXT", "ATTRIB" ],
+        "LayerName": "TEXT"
+      },
+      "Action": {
+        "Height": 3.5,
+        // MText 行距系数（0.25~4.0），不写则保持原系数
+        "LineSpacingFactor": 1.0,
+        "AlsoUpdateDimensionStyle": false
+      }
+    },
+    {
+      "Name": "混凝土填充统一为 ANSI31",
+      "Type": "HatchPatternChange",
+      "Enabled": true,
+      "Filter": {
+        // 只改指定的源图案，其它填充一律不动；留空则改所有 HATCH
+        "SourcePatternName": "AR-CONC",
+        // 可再叠加类型/颜色/图层条件
+        "EntityTypes": [ "HATCH" ]
+      },
+      "Action": {
+        "TargetPatternName": "ANSI31",
+        // PreDefined（默认）/ UserDefined / CustomDefined
+        "PatternType": "PreDefined",
+        // 比例与角度；不写则保持原值。角度单位是【度】
+        "PatternScale": 1.0,
+        "PatternAngle": 45,
+        // 填充样式：Normal（普通）/ Outer（外部）/ Ignore（忽略）
+        "HatchStyle": "Normal"
+      }
+    },
+    {
+      "Name": "纯色填充改为渐变填充",
+      "Type": "HatchPatternChange",
+      "Enabled": false,
+      "Filter": {
+        "EntityTypes": [ "HATCH" ],
+        "SourcePatternName": "SOLID",
+        "LayerName": "HATCH-DEMO"
+      },
+      "Action": {
+        // 填了 TargetGradientName 就转成渐变填充（优先于 TargetPatternName）
+        "TargetGradientName": "LINEAR",
+        "GradientType": "PreDefinedGradient",
+        "GradientAngle": 45,
+        "GradientShift": 0.1,
+        "GradientOneColorMode": true
+      }
+    },
+    {
+      "Name": "清理未使用对象",
+      "Type": "PurgeUnused",
+      "Enabled": false,
+      "Filter": {},
+      "Action": {
+        "PurgeCategories": [ "Block", "Layer", "Linetype", "TextStyle", "DimStyle", "RegApp" ],
+        // 迭代轮次：处理"块删掉后图层才空出来"这类链式依赖
+        "PurgePasses": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ============================================================================
+    Jun.AutoCAD.BatchTool.Tests —— 只测"不碰宿主类型"的那部分逻辑
+
+    刻意**不加入 Jun.AutoCAD.BatchTool.sln**：
+      测试工程是 net8.0-windows，而主工程在 -p:AcadVersion=ZWCAD2020 下是 net48。
+      一旦进解决方案，`dotnet build -p:AcadVersion=ZWCAD2020` 会连带构建本工程并失败。
+      单独运行：dotnet test tests/Jun.AutoCAD.BatchTool.Tests
+
+    边界（重要）：
+      测试进程**不得实例化任何规则 handler**，也不得触碰 RuleExecutionContext / BatchRunner /
+      任何 Document、Transaction、Database 类型。AutoCAD 托管程序集（acdbmgd）在宿主进程外
+      无法加载——缺原生依赖——一旦引到就会抛 FileNotFoundException。
+      因此这里只覆盖：RuleSummary、RuleValidator、NameValidator、NameMatcher、RuleJson。
+    ============================================================================
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Jun.AutoCAD.BatchTool.csproj" />
+  </ItemGroup>
+
+</Project>

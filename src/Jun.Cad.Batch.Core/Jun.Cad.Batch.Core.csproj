@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Jun.Cad.Batch</RootNamespace>
+    <AssemblyName>Jun.Cad.Batch.Core</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ACadSharp" Version="3.8.35" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <!--
+    默认配置模板：首次启动时写到 exe 旁边（ConfigLoader.EnsureDefaultConfig）。
+    唯一真源是仓库根的 Jun.Cad.Batch.json —— 改那一份，别在这里再存一份副本。
+    嵌进程序而不是随包发文件：用户删了/改坏了要能自己长回来，单文件发布也不用额外处理。
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\Jun.Cad.Batch.json" LogicalName="Jun.Cad.Batch.DefaultConfig.json" />
+  </ItemGroup>
+
+</Project>

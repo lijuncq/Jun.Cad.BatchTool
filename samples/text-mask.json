@@ -1,0 +1,23 @@
+{
+  "Version": 1,
+  "ContinueOnError": true,
+  "Verbose": true,
+  "Rules": [
+    {
+      "Name": "MTEXT 遮挡遮罩",
+      "Type": "TextMask",
+      "Enabled": true,
+      "Filter": {
+        "Scope": "ModelOnly",
+        "EntityTypes": [ "MTEXT" ]
+      },
+      "Action": {
+        "MaskMode": "Auto",
+        "MaskOnlyWhenOccluded": true,
+        "MaskMinOccludedRatio": 0.05,
+        "MaskPaddingRatio": 0.15,
+        "MaskLayer": "_MASK"
+      }
+    }
+  ]
+}

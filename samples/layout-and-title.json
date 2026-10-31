@@ -1,0 +1,53 @@
+{
+  "Version": 1,
+  "ContinueOnError": true,
+  "Verbose": true,
+  "Rules": [
+    {
+      "Name": "布局改名 V-{n}",
+      "Type": "LayoutRename",
+      "Enabled": true,
+      "Action": {
+        "LayoutRenameMap": [ "Layout*=V-{n}", "布局*=V-{n}", "Sheet*=S-{n}" ]
+      }
+    },
+    {
+      "Name": "标题栏：图名取文件名",
+      "Type": "TitleBlockNormalize",
+      "Enabled": true,
+      "Filter": {
+        "SourceBlockName": "TB-*"
+      },
+      "Action": {
+        "TitleBlockAttributeMap": [ "TITLE={filename}", "DATE={date}" ],
+        "TitleBlockOnlyIfEmpty": true
+      }
+    },
+    {
+      "Name": "几何清理（预演）",
+      "Type": "GeometryCleanup",
+      "Enabled": true,
+      "Filter": {
+        "Scope": "ModelOnly"
+      },
+      "Action": {
+        "CleanZeroLength": true,
+        "CleanEmptyText": true,
+        "CleanDuplicateEntities": false,
+        "CleanupDryRun": true
+      }
+    },
+    {
+      "Name": "材料表导出",
+      "Type": "BomSync",
+      "Enabled": false,
+      "Filter": {
+        "SourceBlockName": "BOM-*"
+      },
+      "Action": {
+        "BomColumnTags": [ "NO", "NAME", "SPEC", "MAT", "QTY" ],
+        "BomExportPath": "bom-export.csv"
+      }
+    }
+  ]
+}

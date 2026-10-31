@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ============================================================================
+    Jun.Cad.Batch.Tests —— 只测"不依赖 AutoCAD、也不依赖 DWG 文件"的那部分逻辑，
+    外加一组**可跳过**的样图集成测试。
+
+    边界（重要）：
+      测试进程**不得**启动 AutoCAD、不得调用 accoreconsole。规则 handler 可以实例化，
+      因为它们只操作 ACadSharp 的内存模型；但任何"需要宿主重生成"的断言都不在这里。
+
+    样图集成测试：
+      目录由环境变量 `JUN_CAD_SAMPLE_DWG` 指定，默认 `C:\Users\lijun\Downloads\SampleDwg`。
+      目录不存在时这些用例**在发现阶段就被跳过**（不是静默通过），见 SampleDwgFactAttribute。
+    ============================================================================
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Jun.Cad.Batch.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Jun.Cad.Batch.Core\Jun.Cad.Batch.Core.csproj" />
+  </ItemGroup>
+
+</Project>

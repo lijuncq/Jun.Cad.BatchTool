@@ -1,0 +1,21 @@
+{
+  "Version": 1,
+  "ContinueOnError": true,
+  "Verbose": true,
+  "Rules": [
+    {
+      "Name": "替换 P30 → P40",
+      "Type": "TextReplace",
+      "Enabled": true,
+      "Filter": {
+        "Scope": "ModelOnly"
+      },
+      "Action": {
+        "MatchMode": "Contains",
+        "SearchText": "P30",
+        "Replacement": "P40",
+        "CaseSensitive": false
+      }
+    }
+  ]
+}

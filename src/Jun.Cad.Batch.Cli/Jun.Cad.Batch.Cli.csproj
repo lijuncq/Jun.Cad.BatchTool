@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Jun.Cad.Batch.Cli</RootNamespace>
+    <AssemblyName>Jun.Cad.Batch.Cli</AssemblyName>
+    <!-- 图标与界面共用一份 -->
+    <ApplicationIcon>..\..\docs\icons\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Jun.Cad.Batch.Core\Jun.Cad.Batch.Core.csproj" />
+  </ItemGroup>
+
+  <!-- 图案库 / 线型库随程序分发：离线工具没有内核，换图案/建线型全靠这两个文件 -->
+  <ItemGroup>
+    <None Include="Resources\**\*.*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
