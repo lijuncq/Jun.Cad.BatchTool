@@ -586,8 +586,8 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 | `MaskLayerPlottable` | Solid 图层可打印 | Toggle | — | 默认否：Solid 是不透明实心，可打印会在图上留白块 |
 | `MaxMasksPerDrawing` | 单图遮罩上限 | Integer | — | 默认 2000，防止一张图被加上万个遮罩导致打开变慢 |
 | `MaskRebuildText` | 允许重建文字实体 | Toggle | — | 默认否：TEXT/ATTRIB 没有原生遮罩，新建遮罩只能排在文字之后；要放到下面必须重建文字（会改句柄） |
-| `DimensionMaskMode` | 标注遮罩模式 | Enum | Off=不处理<br>BlockInternal=放进 *D 块 | 默认不处理；放进 *D 块会随标注移动，但标注重生成后会丢失 |
-| `DimensionTextMode` | 标注文字范围 | Enum | ExplicitOnly=仅显式文字<br>All=全部（含测量值） | 默认仅显式覆盖；测量值文字位置依赖缓存块，可靠性更低 |
+| `DimensionMaskMode` | 标注遮罩模式 | Enum | Off=不处理<br>BlockInternal=放进 *D 块 | 默认不处理（标注会被整条跳过，记为"标注遮罩未启用"）；放进 *D 块会随标注移动，但标注重生成后会丢失，块内文字句柄也会变 |
+| `DimensionTextMode` | 标注文字范围 | Enum | ExplicitOnly=仅显式文字<br>All=全部（含测量值） | 默认仅显式覆盖；测量值文字位置依赖缓存块，可靠性更低。**注意它只决定"哪些标注"，不决定"扫不扫标注"**——那个由 `Filter.EntityTypes` 管，漏写 DIMENSION 时本字段完全不生效（会告警） |
 
 #### `TextReplace`
 
@@ -824,6 +824,7 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 | `$MEASUREMENT` 修正 | 同一份输出图 | 只在图案名是"仅公制库有"时才改成 1；`ANSI37` 场景保持 `$MEASUREMENT=0` 不动 |
 | 双线缝宽 | `2_SECONDARY_ESCAPE_ROUTE` → `JIS_LC_8A` | 线距 3 → 3（不变）、比例 1 → 0.384615（反算）、缝宽 0.5 → 0.272（提示一次） |
 | 打印样式模式 | `accoreconsole` 读 `(getvar "PSTYLEMODE")` | 源图 1；修复前输出 **0**（CTB 图被当成 STB，打印样式表选不到）；修复后 **1**；STB 样本 0 → 0 不误伤 |
+| 标注文字遮罩 | `TextMask` + `EntityTypes:["MTEXT"]` + `DimensionTextMode:All` | 匹配数 218 = 只有 MTEXT，**20 个 DIMENSION 从未被扫描**；改为不写 EntityTypes 后匹配 238，`BlockInternal` 在 20 个 `*D` 块里各生成 1 个 Wipeout |
 | 关掉保持线距 | 同图，`MatchSpacing=false` | 截图实测组对间距 33.5px/455 → 67px/348（归一化 **2.62×**），与 `7.8 ÷ 3 = 2.6` 吻合；日志告警"3 → 7.8（2.6 倍）" |
 | 关掉保持线距时"沿用原比例" | 源比例 75、线距 225 | 修前 `41=75` 但图案线 7.8（实际密 29 倍）；修后 `41=75`、图案线 585，两者一致 |
 

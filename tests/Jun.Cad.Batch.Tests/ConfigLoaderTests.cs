@@ -157,6 +157,49 @@ namespace Jun.Cad.Batch.Tests
             Assert.False(string.IsNullOrWhiteSpace(config.Rules[0].Name));
         }
 
+        /// <summary>
+        /// TextMask 的两个开关会互相打架：DimensionTextMode 只管"哪些标注"，
+        /// 真正决定扫不扫标注的是 Filter.EntityTypes。用户写了 DimensionTextMode=All
+        /// 却没把 DIMENSION 放进 EntityTypes 时，标注被过滤器直接筛掉、永远扫不到，
+        /// 而界面上看不出任何异常——只能在图上发现"标注文字还是没遮罩"。
+        /// </summary>
+        [Fact]
+        public void 文字遮罩的EntityTypes漏掉DIMENSION时告警()
+        {
+            string path = WriteConfig(@"{
+  ""Version"": 1,
+  ""Rules"": [
+    { ""Name"": ""遮罩"", ""Type"": ""TextMask"",
+      ""Filter"": { ""EntityTypes"": [""MTEXT""] },
+      ""Action"": { ""DimensionTextMode"": ""All"" } }
+  ]
+}");
+
+            List<string> warnings;
+            ConfigLoader.Load(path, out warnings);
+
+            Assert.Contains(warnings, w => w.Contains("DIMENSION"));
+        }
+
+        /// <summary>不写 EntityTypes 时默认含 DIMENSION，不该报警。</summary>
+        [Fact]
+        public void 文字遮罩不写EntityTypes时不告警()
+        {
+            string path = WriteConfig(@"{
+  ""Version"": 1,
+  ""Rules"": [
+    { ""Name"": ""遮罩"", ""Type"": ""TextMask"",
+      ""Filter"": { ""Scope"": ""ModelOnly"" },
+      ""Action"": { ""DimensionTextMode"": ""All"" } }
+  ]
+}");
+
+            List<string> warnings;
+            ConfigLoader.Load(path, out warnings);
+
+            Assert.DoesNotContain(warnings, w => w.Contains("DIMENSION"));
+        }
+
         // ------------------------------------------------------------ 默认配置
 
         [Fact]

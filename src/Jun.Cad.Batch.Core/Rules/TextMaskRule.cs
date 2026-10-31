@@ -108,6 +108,9 @@ namespace Jun.Cad.Batch.Rules
             }
 
             int created = 0;
+            int maskedMText = 0;
+            int maskedDimension = 0;
+            int maskedEntity = 0;
 
             var bySpace = new Dictionary<BlockRecord, List<MaskTarget>>();
             foreach (MaskTarget target in targets)
@@ -157,15 +160,44 @@ namespace Jun.Cad.Batch.Rules
                             action, dimMaskMode))
                     {
                         created++;
+
+                        // 按"实际走了哪条路"分类计数：原来只按 rebuildText 二选一，
+                        // 结果"标注 *D 块内"也被写成"MTEXT 原生背景遮罩"，误导排查
+                        if (target.Entity is MText && !rebuildText)
+                        {
+                            maskedMText++;
+                        }
+                        else if (string.Equals(target.Kind, "DIMENSION", StringComparison.OrdinalIgnoreCase))
+                        {
+                            maskedDimension++;
+                        }
+                        else
+                        {
+                            maskedEntity++;
+                        }
                     }
                 }
             }
 
             if (created > 0)
             {
-                result.AddNote(string.Format(
-                    "共为 {0} 处文字加了遮罩（{1}）。", created,
-                    rebuildText ? "新建遮罩实体" : "MTEXT 原生背景遮罩"));
+                var parts = new List<string>();
+                if (maskedMText > 0)
+                {
+                    parts.Add("MTEXT 原生背景 " + maskedMText);
+                }
+
+                if (maskedDimension > 0)
+                {
+                    parts.Add("标注 *D 块内 " + maskedDimension);
+                }
+
+                if (maskedEntity > 0)
+                {
+                    parts.Add((wantWipeout ? "Wipeout" : "Solid") + " " + maskedEntity);
+                }
+
+                result.AddNote(string.Format("共为 {0} 处文字加了遮罩（{1}）。", created, string.Join(" / ", parts)));
             }
         }
 

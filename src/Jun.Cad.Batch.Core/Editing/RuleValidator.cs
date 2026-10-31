@@ -199,6 +199,24 @@ namespace Jun.Cad.Batch.Editing
                 {
                     issues.Add(Error("Action.MaxMasksPerDrawing", "MaxMasksPerDrawing 至少为 1。"));
                 }
+
+                // 「标注文字要不要处理」有两个开关，很容易互相打架：
+                //   Action.DimensionTextMode  只决定"哪些标注"（全部 / 仅显式改过文字的 / 不处理）
+                //   Filter.EntityTypes        决定"扫不扫 DIMENSION"
+                // 用户写了 DimensionTextMode=All 却没把 DIMENSION 放进 EntityTypes 时，
+                // 标注会被过滤器直接筛掉，DimensionTextMode 完全不起作用——而界面上看不出任何异常，
+                // 只能在图上发现"标注文字还是没遮罩"。这里必须点出来。
+                if (!string.Equals(NormalizeText(action.DimensionTextMode), "off", StringComparison.OrdinalIgnoreCase)
+                    && filter.EntityTypes != null
+                    && filter.EntityTypes.Count > 0
+                    && !ContainsEntityType(filter.EntityTypes, "DIMENSION"))
+                {
+                    issues.Add(Warning("Filter.EntityTypes", string.Format(
+                        "Filter.EntityTypes 里没有 DIMENSION，Action.DimensionTextMode={0} 对标注文字不会生效"
+                        + "（标注会被过滤掉，永远扫不到）。要处理标注文字，把 DIMENSION 加进 EntityTypes，"
+                        + "或者整个删掉 EntityTypes——不写时默认就是 TEXT / MTEXT / DIMENSION。",
+                        action.DimensionTextMode)));
+                }
             }
             else if (string.Equals(type, "DimTextAudit", StringComparison.OrdinalIgnoreCase))
             {
@@ -445,6 +463,25 @@ namespace Jun.Cad.Batch.Editing
             if (IsType(type, "DimensionStyleChange") && !string.IsNullOrWhiteSpace(f.DimensionStyleName))
             {
                 return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>去掉首尾空白；null 变空串。用来做大小写无关的枚举值比较。</summary>
+        private static string NormalizeText(string value)
+        {
+            return value == null ? string.Empty : value.Trim();
+        }
+
+        private static bool ContainsEntityType(List<string> types, string expected)
+        {
+            foreach (string type in types)
+            {
+                if (string.Equals((type ?? string.Empty).Trim(), expected, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
             }
 
             return false;

@@ -166,18 +166,27 @@
       "Name": "给被遮挡的文字加遮罩",
       "Type": "TextMask",
       "Enabled": false,
+      // **不要手写 EntityTypes**：不写时默认就是 TEXT / MTEXT / DIMENSION。
+      // 一旦写了，就只剩列出来的那几种——写成 ["MTEXT"] 会让 DimensionTextMode 彻底失效，
+      // 标注被过滤器筛掉、扫都扫不到，而界面上看不出任何异常。
       "Filter": {
-        "Scope": "ModelOnly",
-        "EntityTypes": ["MTEXT"]
+        "Scope": "ModelOnly"
       },
       "Action": {
-        // Auto=MTEXT 用原生背景填充、TEXT/ATTRIB 重建带遮罩的文字
+        // Auto=MTEXT 用原生背景填充、TEXT/ATTRIB 重建带遮罩的文字；
+        // Wipeout=只走新建 Wipeout（探测不过会直接报错）；Solid=用 2D Solid
         "MaskMode": "Auto",
         // 只给"确实被别的对象压住"的文字加，避免整张图铺满遮罩
         "MaskOnlyWhenOccluded": true,
         "MaskMinOccludedRatio": 0.05,
         "MaskPaddingRatio": 0.15,
-        "MaskLayer": "_MASK"
+        "MaskLayer": "_MASK",
+        // 标注文字：All=所有标注 / ExplicitOnly=只处理手工改过文字的 / Off=不处理
+        "DimensionTextMode": "All",
+        // 标注没有原生遮罩（DIMTFILL 这个库版本写不进 DWG），只能把 Wipeout 塞进标注的
+        // *D 缓存块。代价：会随标注移动，但标注被编辑（块重生成）后遮罩会丢失；
+        // 块内文字实体的句柄也会变。不设这一项时标注会被整条跳过（记为"标注遮罩未启用"）。
+        "DimensionMaskMode": "BlockInternal"
       }
     },
 

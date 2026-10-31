@@ -10,4 +10,8 @@
   <ItemGroup>
     <PackageReference Include="ACadSharp" Version="3.8.35" />
   </ItemGroup>
+  <!-- 有些探针要复用 Core 的 TextBounds/Bounds2d，保证和产品代码走同一套算法 -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Jun.Cad.Batch.Core\Jun.Cad.Batch.Core.csproj" />
+  </ItemGroup>
 </Project>
