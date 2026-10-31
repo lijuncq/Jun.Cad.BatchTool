@@ -39,6 +39,12 @@ namespace Probe
                 return;
             }
 
+            if (args.Length > 1 && args[0] == "pstyle")
+            {
+                Pstyle.Run(args);
+                return;
+            }
+
             if (args.Length > 1 && args[0] == "hdr")
             {
                 Hdr.Run(args[1]);

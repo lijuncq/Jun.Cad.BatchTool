@@ -315,4 +315,26 @@ namespace Jun.Cad.Batch.Tests
             Assert.Equal(4, summary.Split('/').Length);
         }
     }
+
+    /// <summary>
+    /// `$PSTYLEMODE` 归一化。
+    ///
+    /// ACadSharp 对这个变量**读写不对称**（AutoCAD 2025 内核实测）：
+    /// 颜色相关（CTB）的图读出来是 8192，而写入只认语义值 0/1。
+    /// 原样写回去，AutoCAD 会把图当成"命名（STB）"——打印对话框的打印样式表
+    /// 下拉框就只列 STB，用户自建的 CTB 目录（哪怕已加进支持文件搜索路径）一个都不显示，
+    /// 而画面上看不出任何异常。
+    /// </summary>
+    public class PlotStyleModeTests
+    {
+        [Theory]
+        [InlineData((short)0, (short)0)]      // 命名（STB）：保持不变
+        [InlineData((short)1, (short)1)]      // 已是语义值：保持不变
+        [InlineData((short)8192, (short)1)]   // 颜色相关（CTB）在库里的原始值
+        [InlineData((short)-1, (short)1)]     // 其它非零值：一律按 CTB
+        public void PSTYLEMODE原始值折成语义值(short raw, short expected)
+        {
+            Assert.Equal(expected, CadFileSession.NormalizePlotStyleModeValue(raw));
+        }
+    }
 }

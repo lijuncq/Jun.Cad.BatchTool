@@ -744,6 +744,7 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 | 事务回滚 | 不支持 | 没有事务（2.1） | 回滚边界是文件；`OnRuleFailure` 决定中止是否写盘 |
 | `Scope=Selection` | 降级 | 没有交互选择集 | 降级为整张图并告警 |
 | 打印样式置随层 | 不支持 | 未建模实体级 `PlotStyleName` | — |
+| `$PSTYLEMODE` 保持 | 已修 | 库读出来是 8192、写入只认 0/1（读写不对称） | 读入后归一化，见 `CadFileSession.NormalizePlotStyleModeValue` |
 | 动态块参数迁移 | 不支持 | 未建模 `DynamicBlockReferenceProperty` | 替换后需人工重设 |
 | 表格单元格文字 | 降级 | API 已暴露，缓存块不同步 | 需回归；查看端可能显示旧值 |
 | 表格包围盒 | 不支持 | `GetBoundingBox()` 返回 `BoundingBox.Null` | 区域过滤时表格无法判定即排除 |
@@ -822,6 +823,7 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 | 图案名可解析 | `accoreconsole` + `(setvar "HPNAME" …)` | `$MEASUREMENT=0` 时 `JIS_LC_8A` 报"无效的图案名称"、`ANSI31` 正常；改成 1 后两者都成功 |
 | `$MEASUREMENT` 修正 | 同一份输出图 | 只在图案名是"仅公制库有"时才改成 1；`ANSI37` 场景保持 `$MEASUREMENT=0` 不动 |
 | 双线缝宽 | `2_SECONDARY_ESCAPE_ROUTE` → `JIS_LC_8A` | 线距 3 → 3（不变）、比例 1 → 0.384615（反算）、缝宽 0.5 → 0.272（提示一次） |
+| 打印样式模式 | `accoreconsole` 读 `(getvar "PSTYLEMODE")` | 源图 1；修复前输出 **0**（CTB 图被当成 STB，打印样式表选不到）；修复后 **1**；STB 样本 0 → 0 不误伤 |
 | 关掉保持线距 | 同图，`MatchSpacing=false` | 截图实测组对间距 33.5px/455 → 67px/348（归一化 **2.62×**），与 `7.8 ÷ 3 = 2.6` 吻合；日志告警"3 → 7.8（2.6 倍）" |
 | 关掉保持线距时"沿用原比例" | 源比例 75、线距 225 | 修前 `41=75` 但图案线 7.8（实际密 29 倍）；修后 `41=75`、图案线 585，两者一致 |
 

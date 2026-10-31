@@ -116,7 +116,49 @@ namespace Jun.Cad.Batch.Engine
             session.Document = doc;
             session.SourceVersion = doc.Header.Version;
             session.OutputVersion = ResolveOutputVersion(session.SourceVersion, outputVersion);
+
+            // 读入后立刻归一化 $PSTYLEMODE，见方法注释——这一步漏了会毁掉打印样式
+            session.NormalizePlotStyleMode();
             return session;
+        }
+
+        /// <summary>
+        /// 把 <c>$PSTYLEMODE</c> 归一成语义值（0 = 命名 STB / 1 = 颜色相关 CTB）。
+        ///
+        /// **ACadSharp 对这个变量的读和写是不对称的**（AutoCAD 2025 内核实测）：
+        ///
+        /// | AutoCAD 侧 | 库读出来 | 库写入应给 |
+        /// |---|---|---|
+        /// | 1（颜色相关，CTB） | **8192** | 1 |
+        /// | 0（命名，STB）     | 0       | 0 |
+        ///
+        /// 把读到的 8192 原样写回去，AutoCAD 读到的就是 **0**——图纸从"颜色相关"
+        /// 变成"命名"，打印对话框的打印样式表下拉框就只列 STB，
+        /// 用户自建的 CTB 目录（哪怕已经加进支持文件搜索路径）一个都不显示。
+        ///
+        /// 这条不是"顺手改改"：`PSTYLEMODE` 决定整张图用哪套打印样式表，
+        /// 一旦被翻掉，图纸的打印效果全变，而画面上看不出任何异常。
+        /// </summary>
+        public void NormalizePlotStyleMode()
+        {
+            if (Document == null)
+            {
+                return;
+            }
+
+            Document.Header.PlotStyleMode = NormalizePlotStyleModeValue(Document.Header.PlotStyleMode);
+        }
+
+        /// <summary>
+        /// 把库读到的原始值折成语义值：0 = 命名（STB），1 = 颜色相关（CTB）。
+        ///
+        /// 0 / 1 原样返回（库将来修好读取后就是这两个）；其余一律按"非零即 CTB"处理。
+        /// 抽成纯函数是为了能单测——这个 bug 的代价是"图纸打印样式全变但画面看不出来"，
+        /// 必须有个不需要真图、不需要 AutoCAD 的断言盯着。
+        /// </summary>
+        public static short NormalizePlotStyleModeValue(short raw)
+        {
+            return raw == 0 || raw == 1 ? raw : (short)1;
         }
 
         /// <summary>
