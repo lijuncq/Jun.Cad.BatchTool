@@ -4,19 +4,26 @@
   "Verbose": true,
   "Rules": [
     {
-      "Name": "MTEXT 遮挡遮罩",
+      "Name": "Native background masks for all supported text",
       "Type": "TextMask",
       "Enabled": true,
       "Filter": {
-        "Scope": "ModelOnly",
-        "EntityTypes": [ "MTEXT" ]
+        "Scope": "ModelAndLayouts"
       },
       "Action": {
         "MaskMode": "Auto",
-        "MaskOnlyWhenOccluded": true,
+        "MaskOnlyWhenOccluded": false,
         "MaskMinOccludedRatio": 0.05,
         "MaskPaddingRatio": 0.15,
-        "MaskLayer": "_MASK"
+        "MaskTextBox": "Auto",
+        "MaskBringTextToFront": true,
+        "MaskLayer": "_MASK",
+        "MaskLayerPlottable": true,
+        "MaskRebuildText": true,
+        "MaskInsideBlocks": true,
+        "MaskSendHatchToBack": true,
+        "DimensionTextMode": "All",
+        "DimensionMaskMode": "Native"
       }
     }
   ]

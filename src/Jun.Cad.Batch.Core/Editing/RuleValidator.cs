@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using Jun.Cad.Batch.Config;
 using Jun.Cad.Batch.Engine;
+using Newtonsoft.Json.Linq;
 
 namespace Jun.Cad.Batch.Editing
 {
@@ -176,28 +178,58 @@ namespace Jun.Cad.Batch.Editing
                 string mode = (action.MaskMode ?? string.Empty).Trim();
                 if (mode.Length > 0
                     && !string.Equals(mode, "Auto", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(mode, "Wipeout", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(mode, "Solid", StringComparison.OrdinalIgnoreCase))
+                    && !string.Equals(mode, "Wipeout", StringComparison.OrdinalIgnoreCase))
                 {
-                    issues.Add(Warning("Action.MaskMode",
-                        "MaskMode 只能是 Auto / Wipeout / Solid，未知值按 Auto 处理。"));
+                    issues.Add(Error("Action.MaskMode",
+                        "MaskMode must be Auto or Wipeout; both use native masks. Solid and other values are not supported."));
+                }
+
+                if (action.Extra != null)
+                {
+                    foreach (var field in action.Extra)
+                    {
+                        if (string.Equals(field.Key, "MaskSolidColorIndex", StringComparison.OrdinalIgnoreCase))
+                        {
+                            issues.Add(Warning("Action.MaskSolidColorIndex",
+                                "MaskSolidColorIndex is deprecated and ignored. Native masks use the drawing background color; no RGB fill option is available."));
+                        }
+                        else if (string.Equals(field.Key, "MaskPadding", StringComparison.OrdinalIgnoreCase)
+                                 && field.Value != null && field.Value.Type != JTokenType.Null)
+                        {
+                            double padding;
+                            if (!double.TryParse(field.Value.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out padding)
+                                || padding != 0)
+                            {
+                                issues.Add(Error("Action.MaskPadding",
+                                    "MaskPadding is retired; only zero can be ignored. Remove it and use MaskPaddingRatio (default 0.15 = 15% of text character height per side)."));
+                            }
+                        }
+                    }
                 }
 
                 if (action.MaskPaddingRatio.HasValue
-                    && (action.MaskPaddingRatio.Value < 0 || action.MaskPaddingRatio.Value > 2))
+                    && (double.IsNaN(action.MaskPaddingRatio.Value)
+                        || double.IsInfinity(action.MaskPaddingRatio.Value)
+                        || action.MaskPaddingRatio.Value < 0 || action.MaskPaddingRatio.Value > 2))
                 {
-                    issues.Add(Error("Action.MaskPaddingRatio", "MaskPaddingRatio 应在 0 ~ 2 之间（相对字高）。"));
+                    issues.Add(Error("Action.MaskPaddingRatio",
+                        "MaskPaddingRatio must be finite and between 0 and 2; each side uses text character height × ratio (0.15 = 15%), not bounding-box height."));
+                }
+
+                string textBox = (action.MaskTextBox ?? string.Empty).Trim();
+                if (textBox.Length > 0
+                    && !string.Equals(textBox, "Auto", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(textBox, "Native", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(textBox, "Tight", StringComparison.OrdinalIgnoreCase))
+                {
+                    issues.Add(Error("Action.MaskTextBox",
+                        "MaskTextBox must be Auto (default), Native, or Tight. Auto keeps the native background when the text frame fits the text and switches to a tight WIPEOUT when the frame is looser."));
                 }
 
                 if (action.MaskMinOccludedRatio.HasValue
                     && (action.MaskMinOccludedRatio.Value < 0 || action.MaskMinOccludedRatio.Value > 1))
                 {
                     issues.Add(Error("Action.MaskMinOccludedRatio", "MaskMinOccludedRatio 应在 0 ~ 1 之间。"));
-                }
-
-                if (action.MaxMasksPerDrawing.HasValue && action.MaxMasksPerDrawing.Value < 1)
-                {
-                    issues.Add(Error("Action.MaxMasksPerDrawing", "MaxMasksPerDrawing 至少为 1。"));
                 }
 
                 // 「标注文字要不要处理」有两个开关，很容易互相打架：
@@ -212,10 +244,9 @@ namespace Jun.Cad.Batch.Editing
                     && !ContainsEntityType(filter.EntityTypes, "DIMENSION"))
                 {
                     issues.Add(Warning("Filter.EntityTypes", string.Format(
-                        "Filter.EntityTypes 里没有 DIMENSION，Action.DimensionTextMode={0} 对标注文字不会生效"
-                        + "（标注会被过滤掉，永远扫不到）。要处理标注文字，把 DIMENSION 加进 EntityTypes，"
-                        + "或者整个删掉 EntityTypes——不写时默认就是 TEXT / MTEXT / DIMENSION。",
-                        action.DimensionTextMode)));
+                        "Filter.EntityTypes excludes DIMENSION, so Action.DimensionTextMode={0} cannot affect dimension text. "
+                        + "Add DIMENSION or omit EntityTypes to include all supported text (TEXT / MTEXT / ATTDEF / ATTRIB / DIMENSION).",
+                        string.IsNullOrWhiteSpace(action.DimensionTextMode) ? "All" : action.DimensionTextMode.Trim())));
                 }
             }
             else if (string.Equals(type, "DimTextAudit", StringComparison.OrdinalIgnoreCase))

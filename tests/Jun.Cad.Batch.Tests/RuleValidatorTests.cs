@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Jun.Cad.Batch.Config;
 using Jun.Cad.Batch.Editing;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Jun.Cad.Batch.Tests
@@ -191,6 +192,173 @@ namespace Jun.Cad.Batch.Tests
             };
 
             Assert.Empty(Validate(rule));
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData(" ")]
+        [InlineData("Auto")]
+        [InlineData(" auto ")]
+        [InlineData("Wipeout")]
+        [InlineData(" wIpEoUt ")]
+        public void TextMask_AcceptsOnlyNativeModesAndDefaults(string mode)
+        {
+            var rule = new RuleConfig { Type = "TextMask", Action = new RuleAction { MaskMode = mode } };
+
+            Assert.Empty(Validate(rule));
+        }
+
+        [Theory]
+        [InlineData("Solid")]
+        [InlineData(" solid ")]
+        [InlineData("Unknown")]
+        [InlineData("0")]
+        public void TextMask_RejectsSolidAndUnknownModes(string mode)
+        {
+            var rule = new RuleConfig { Type = "TextMask", Action = new RuleAction { MaskMode = mode } };
+
+            Assert.True(HasError(Validate(rule), "Action.MaskMode"));
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData(0.0)]
+        [InlineData(0.15)]
+        [InlineData(2.0)]
+        public void TextMask_AcceptsFinitePaddingBoundaries(double? ratio)
+        {
+            var rule = new RuleConfig { Type = "TextMask", Action = new RuleAction { MaskPaddingRatio = ratio } };
+
+            Assert.Empty(Validate(rule));
+        }
+
+        [Theory]
+        [InlineData(-0.01)]
+        [InlineData(2.01)]
+        [InlineData(double.NaN)]
+        [InlineData(double.PositiveInfinity)]
+        [InlineData(double.NegativeInfinity)]
+        public void TextMask_RejectsInvalidPaddingRatios(double ratio)
+        {
+            var rule = new RuleConfig { Type = "TextMask", Action = new RuleAction { MaskPaddingRatio = ratio } };
+
+            Assert.True(HasError(Validate(rule), "Action.MaskPaddingRatio"));
+        }
+
+        [Theory]
+        [InlineData("MaskSolidColorIndex")]
+        [InlineData("masksolidcolorindex")]
+        public void TextMask_RetiredColorWarnsWithoutDiscardingExtra(string key)
+        {
+            var rule = new RuleConfig
+            {
+                Type = "TextMask",
+                Action = new RuleAction { Extra = new Dictionary<string, JToken> { [key] = new JValue(255) } }
+            };
+
+            FieldIssue issue = Assert.Single(Validate(rule));
+            Assert.Equal(IssueSeverity.Warning, issue.Severity);
+            Assert.Equal("Action.MaskSolidColorIndex", issue.Path);
+            Assert.Contains("deprecated", issue.Message);
+            Assert.Equal(255, rule.Action.Extra[key].Value<int>());
+        }
+
+        [Theory]
+        [InlineData("0", false)]
+        [InlineData("0.0", false)]
+        [InlineData("\"0\"", false)]
+        [InlineData("null", false)]
+        [InlineData("1", true)]
+        [InlineData("-0.01", true)]
+        [InlineData("\"NaN\"", true)]
+        [InlineData("\"Infinity\"", true)]
+        [InlineData("\"invalid\"", true)]
+        [InlineData("{}", true)]
+        public void TextMask_RetiredPaddingRequiresMigrationUnlessZeroOrUnset(string json, bool error)
+        {
+            JToken value = JToken.Parse(json);
+            var rule = new RuleConfig
+            {
+                Type = "TextMask",
+                Action = new RuleAction
+                {
+                    MaskPaddingRatio = 0.15,
+                    Extra = new Dictionary<string, JToken> { ["maskpadding"] = value }
+                }
+            };
+
+            List<FieldIssue> issues = Validate(rule);
+            Assert.Equal(error, HasError(issues, "Action.MaskPadding"));
+            if (error)
+            {
+                Assert.Contains("MaskPaddingRatio", Assert.Single(issues).Message);
+            }
+            else
+            {
+                Assert.Empty(issues);
+            }
+            Assert.Same(value, rule.Action.Extra["maskpadding"]);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData(0)]
+        [InlineData(-1)]
+        [InlineData(1)]
+        [InlineData(2001)]
+        public void TextMask_MaskLimitDoesNotRejectUnlimitedValues(int? limit)
+        {
+            var rule = new RuleConfig { Type = "TextMask", Action = new RuleAction { MaxMasksPerDrawing = limit } };
+
+            Assert.Empty(Validate(rule));
+        }
+
+        [Theory]
+        [InlineData("Off")]
+        [InlineData("ExplicitOnly")]
+        [InlineData("All")]
+        public void TextMask_AcceptsDimensionTextModes(string mode)
+        {
+            var rule = new RuleConfig { Type = "TextMask", Action = new RuleAction { DimensionTextMode = mode } };
+
+            Assert.Empty(Validate(rule));
+        }
+
+        [Fact]
+        public void TextMask_DefaultDimensionScopeWarnsWhenFilteredOut()
+        {
+            var rule = new RuleConfig
+            {
+                Type = "TextMask",
+                Filter = new RuleFilter { EntityTypes = new List<string> { "MTEXT" } }
+            };
+
+            FieldIssue issue = Assert.Single(Validate(rule));
+            Assert.Equal(IssueSeverity.Warning, issue.Severity);
+            Assert.Equal("Filter.EntityTypes", issue.Path);
+            Assert.Contains("DimensionTextMode=All", issue.Message);
+
+            rule.Action.DimensionTextMode = "Off";
+            Assert.Empty(Validate(rule));
+        }
+
+        [Fact]
+        public void OtherRules_PreserveRetiredMaskFieldsWithoutMaskValidation()
+        {
+            var rule = new RuleConfig
+            {
+                Type = "TextReplace",
+                Action = new RuleAction
+                {
+                    SearchText = "before",
+                    Replacement = "after",
+                    Extra = new Dictionary<string, JToken> { ["MaskPadding"] = new JValue(1) }
+                }
+            };
+
+            Assert.Empty(Validate(rule));
+            Assert.Equal(1, rule.Action.Extra["MaskPadding"].Value<int>());
         }
 
         [Fact]

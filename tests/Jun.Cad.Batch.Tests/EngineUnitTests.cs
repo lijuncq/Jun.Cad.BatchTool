@@ -212,26 +212,27 @@ namespace Jun.Cad.Batch.Tests
         }
 
         /// <summary>
-        /// 库的 `CadWipeoutBase.GetBoundingBox()` 忽略 U/V 向量：旋转 90° 的遮罩会算成横的。
-        /// 这里断言我们自己的实现是对的。
+        /// Wipeout 的裁剪边界是像素坐标，世界范围必须通过图像尺寸及 U/V 向量展开。
         /// </summary>
         [Fact]
-        public void 旋转遮罩的包围盒按UV向量展开()
+        public void 旋转遮罩的包围盒按像素坐标和UV向量展开()
         {
             var wipeout = new Wipeout
             {
                 InsertPoint = new XYZ(0, 0, 0),
                 Size = new XY(1, 1),
-                UVector = new XYZ(0, 1, 0),
-                VVector = new XYZ(-1, 0, 0)
+                UVector = new XYZ(0, 10, 0),
+                VVector = new XYZ(-10, 0, 0)
             };
 
-            wipeout.ClipBoundaryVertices.Add(new XY(0, 0));
-            wipeout.ClipBoundaryVertices.Add(new XY(10, 4));
+            wipeout.ClipBoundaryVertices.Add(new XY(-0.5, 0.5));
+            wipeout.ClipBoundaryVertices.Add(new XY(0.5, 0.5));
+            wipeout.ClipBoundaryVertices.Add(new XY(0.5, 0.1));
+            wipeout.ClipBoundaryVertices.Add(new XY(-0.5, 0.1));
 
             Bounds2d box = TextBounds.ForWipeout(wipeout);
 
-            // 局部 x 沿 +Y、局部 y 沿 -X → 世界范围 X:-4..0, Y:0..10
+            // 局部矩形 10×4 旋转 90° 后：世界范围 X:-4..0, Y:0..10。
             Assert.Equal(-4, box.MinX, 3);
             Assert.Equal(0, box.MaxX, 3);
             Assert.Equal(0, box.MinY, 3);

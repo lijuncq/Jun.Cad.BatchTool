@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using ACadSharp;
 using ACadSharp.Entities;
 using ACadSharp.Objects;
@@ -7,28 +8,25 @@ using ACadSharp.Tables;
 using CSMath;
 using Jun.Cad.Batch.Config;
 using Jun.Cad.Batch.Engine;
-using Jun.Cad.Batch.Engine.Preflight;
 
 namespace Jun.Cad.Batch.Rules
 {
     /// <summary>
-    /// 批量给文字加遮罩。
+    /// 批量给文字加遮罩。默认**所有**文字都加（含块定义里的文字、标注里的文字）。
     ///
-    /// **能力边界（3.8.35 实测，决定了本规则的形态）**：
+    /// 只有一条主线：原生遮罩，没有 2D Solid 兜底。
+    ///   * MTEXT（模型/布局/块定义）→ 自身背景填充，用**图形背景色**；
+    ///     文字框 (41) 比文字宽时（AutoCAD 原生背景按框宽填充，一侧会空出一大截）
+    ///     改用紧贴实测文字宽度的 Wipeout（MaskTextBox=Auto，默认）；
+    ///   * TEXT / ATTRIB / ATTDEF → WIPEOUT（真擦除，露出背景）；
+    ///   * 标注文字 → DIMTFILL=1 样式覆盖（图形背景色，重生成不丢）。
     ///
-    /// * MTEXT 有**原生背景遮罩**（<c>BackgroundFillFlags</c>），它是文字自身的属性，
-    ///   不新增实体、不依赖绘制顺序、不影响句柄 —— 默认走这条路；
-    /// * TEXT / ATTRIB 没有原生遮罩，只能新建 Wipeout / 2D Solid。而
-    ///   <c>BlockRecord.Entities</c> 是 <c>CadObjectCollection</c>，**只有 Add/Remove，没有 Insert**；
-    ///   新实体永远追加在末尾（句柄也最大），也就是**画在文字上面**——Wipeout 会把文字自己擦掉。
-    ///   要让它排在文字之前，只能"移出文字 → 加遮罩 → 再把文字加回去"，而这会给文字
-    ///   **重新分配句柄**（实测 48 → 4A，且 <c>Handle</c> 是只读属性，无法恢复）。
-    ///   因此这条路做成显式开关 <c>MaskRebuildText</c>（默认关），关着时记 Blocked 并说明原因；
-    /// * DIMENSION 更不能重建（标注带 <c>*D</c> 缓存块，重建会断开关联），
-    ///   所以标注文字遮罩**当前版本不支持**，同样记 Blocked 并写明原因；
-    /// * 无论哪种方式，遮罩都是**静态**的：文字/标注被编辑后不会跟着走。
+    /// 绘制顺序：遮罩必须排在文字之前（否则文字自己被擦掉），且两者都要在
+    /// 其它图形之上（否则线/填充穿过遮罩）。默认把遮罩+文字推到容器实体集合
+    /// 末尾 = 最上层（MaskBringTextToFront，默认开），见 MaskService.PlaceMaskBefore。
     ///
-    /// 这几条都不是"没实现"，而是纯文件模式下的真实边界，必须出现在预览和报告里。
+    /// 边界偏移：每边 = **字高 × MaskPaddingRatio**（默认 0.15），不是包围盒高度——
+    /// 多行 MTEXT 的包围盒高度是行数倍，用它会算出完全不同的留白。
     /// </summary>
     public sealed class TextMaskRule : IRuleHandler
     {
@@ -41,67 +39,30 @@ namespace Jun.Cad.Batch.Rules
         {
             RuleAction action = context.Action;
 
-            bool onlyOccluded = RuleContext.Bool(action.MaskOnlyWhenOccluded, true);
-            double padRatio = RuleContext.Double(action.MaskPaddingRatio, 0.15);
-            double padAbs = RuleContext.Double(action.MaskPadding, 0);
+            double padRatio = NormalizePaddingRatio(RuleContext.Double(action.MaskPaddingRatio, MaskService.DefaultPaddingRatio));
+            bool onlyOccluded = RuleContext.Bool(action.MaskOnlyWhenOccluded, false);
             double threshold = RuleContext.Double(action.MaskMinOccludedRatio, 0.05);
             bool useBlockBounds = !RuleContext.Bool(action.MaskIgnoreBlockBounds, true);
-            bool rebuildText = RuleContext.Bool(action.MaskRebuildText, false);
+            bool rebuildText = RuleContext.Bool(action.MaskRebuildText, true);
             string maskLayerName = string.IsNullOrWhiteSpace(action.MaskLayer)
                 ? MaskService.DefaultMaskLayer
                 : action.MaskLayer.Trim();
-            int maxMasks = RuleContext.Int(action.MaxMasksPerDrawing, 2000);
+            int maxMasks = RuleContext.Int(action.MaxMasksPerDrawing, 0);
             string dimMode = NormalizeDimensionMode(action.DimensionTextMode);
             string dimMaskMode = NormalizeDimensionMaskMode(action.DimensionMaskMode);
+            string maskTextBox = NormalizeMaskTextBox(action.MaskTextBox);
+            bool bringToFront = RuleContext.Bool(action.MaskBringTextToFront, true);
             bool sendHatchToBack = RuleContext.Bool(action.MaskSendHatchToBack, true);
+            bool maskInsideBlocks = RuleContext.Bool(action.MaskInsideBlocks, true);
 
-            // ---- 只有"新建遮罩实体"这条路才需要 Wipeout 探测 ----
-            string requested = NormalizeMaskMode(action.MaskMode);
-            bool wantWipeout = !string.Equals(requested, "Solid", StringComparison.OrdinalIgnoreCase);
-            string degradeNote = null;
+            // 只剩原生遮罩一条路：Auto / Wipeout 同义。Solid 与其它写法是硬错误，
+            // 不做"猜一个我能处理的模式"这种静默降级。
+            RequireNativeMaskMode(action.MaskMode);
 
-            if (wantWipeout)
-            {
-                ProbeResult probe = CapabilityProbe.WipeoutWriter();
-                if (probe.Status != ProbeStatus.Passed)
-                {
-                    if (string.Equals(requested, "Wipeout", StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new RuleValidationException(
-                            "MaskMode=Wipeout，但 Wipeout 写出探测未通过：" + probe.Detail
-                            + "。把 MaskMode 改成 Auto 可以让它自动降级为 2D Solid。");
-                    }
-
-                    wantWipeout = false;
-                    degradeNote = "Wipeout 写出探测失败，改用 2D Solid：" + probe.Detail;
-                    context.Log.Warn(degradeNote);
-                }
-            }
-
-            // 只要有任何一条路径可能"新建遮罩实体"，就需要遮罩图层：
-            // TEXT/ATTRIB 的重建路径、Solid 降级、标注的 *D 块内路径都算。
-            bool mayCreateEntity = rebuildText || !wantWipeout
-                                   || string.Equals(dimMaskMode, "BlockInternal", StringComparison.OrdinalIgnoreCase);
-
-            Layer maskLayer = null;
-            if (mayCreateEntity)
-            {
-                // 只有真的会建实体时才需要遮罩图层
-                maskLayer = LayerService.EnsureLayer(context.Document, maskLayerName, action, context.Log, context.Resources);
-                if (maskLayer == null)
-                {
-                    throw new RuleValidationException("遮罩图层「" + maskLayerName + "」不存在且无法创建。");
-                }
-
-                if (!RuleContext.Bool(action.MaskLayerPlottable, false))
-                {
-                    // Solid 是不透明实心，可打印会在图上留一块实色
-                    maskLayer.PlotFlag = false;
-                }
-            }
+            var runtime = new MaskRuntime(context, action, maskLayerName, padRatio);
 
             var targets = new List<MaskTarget>();
-            CollectTargets(context, result, dimMode, padRatio, padAbs, targets);
+            CollectTargets(context, result, dimMode, padRatio, maskInsideBlocks, maskTextBox, targets);
 
             if (targets.Count == 0)
             {
@@ -112,7 +73,7 @@ namespace Jun.Cad.Batch.Rules
             int created = 0;
             int maskedMText = 0;
             int maskedDimension = 0;
-            int maskedEntity = 0;
+            int maskedWipeout = 0;
             int movedToBack = 0;
             var hatchesToBack = new List<Hatch>();
 
@@ -134,25 +95,41 @@ namespace Jun.Cad.Batch.Rules
                 BlockRecord space = pair.Key;
                 List<MaskTarget> list = pair.Value;
 
-                BoundsIndex occluders = BuildOccluders(space, list, useBlockBounds, maskLayerName);
+                // 索引只在两种情况下要：判遮挡、找"压在文字上的填充"。
+                // 两个开关都关时不建，省一遍全空间遍历。
+                BoundsIndex occluders = (onlyOccluded || sendHatchToBack)
+                    ? BuildOccluders(space, list, useBlockBounds, maskLayerName)
+                    : null;
 
                 foreach (MaskTarget target in list)
                 {
                     double ratio = 1.0;
                     if (onlyOccluded)
                     {
-                        ratio = ComputeOcclusion(target.Rect, occluders);
-                        if (ratio < threshold)
+                        // 块内文字**跳过遮挡判定**，直接加。
+                        //
+                        // 理由：块定义里的文字坐标是定义坐标系，真正会不会被压住取决于
+                        // 每个块参照插到哪里、旁边画了什么——这些在定义层面根本看不到。
+                        // 拿"块定义自身的实体"去判，得到的永远是"无遮挡"，
+                        // 于是块内文字一个遮罩都不会加（这正是用户报的现象）。
+                        // 判不了就不判，按"宁可多加"处理；数量上限 MaxMasksPerDrawing 兜底。
+                        //
+                        // 标注也跳过：DIMTFILL 覆盖不建几何，没有"白加"的问题。
+                        if (!target.InsideBlock && target.Kind != "DIMENSION")
                         {
-                            result.MarkSkipped("无遮挡");
-                            context.RecordSkip(target.Entity, "加遮罩",
-                                string.Format("遮挡占比 {0:P0} < 阈值 {1:P0}", ratio, threshold),
-                                false, target.SpaceName);
-                            continue;
+                            ratio = ComputeOcclusion(target.Rect, occluders);
+                            if (ratio < threshold)
+                            {
+                                result.MarkSkipped("无遮挡");
+                                context.RecordSkip(target.Entity, "加遮罩",
+                                    string.Format("遮挡占比 {0:P0} < 阈值 {1:P0}", ratio, threshold),
+                                    false, target.SpaceName);
+                                continue;
+                            }
                         }
                     }
 
-                    if (created >= maxMasks)
+                    if (maxMasks > 0 && created >= maxMasks)
                     {
                         result.MarkSkipped("超过单图遮罩上限");
                         context.RecordBlocked(target.Entity, "加遮罩",
@@ -160,31 +137,29 @@ namespace Jun.Cad.Batch.Rules
                         continue;
                     }
 
-                    if (ApplyMask(context, result, target, wantWipeout, rebuildText, maskLayer, ratio, degradeNote,
-                            action, dimMaskMode))
+                    MaskPath path;
+                    if (ApplyMask(context, result, runtime, target, rebuildText, dimMaskMode, maskTextBox, bringToFront, out path))
                     {
                         created++;
 
-                        // 按"实际走了哪条路"分类计数：原来只按 rebuildText 二选一，
-                        // 结果"标注 *D 块内"也被写成"MTEXT 原生背景遮罩"，误导排查
-                        if (target.Entity is MText && !rebuildText)
+                        // 按 ApplyMask **实际走的路径**分类计数（配置开关不是路径）
+                        switch (path)
                         {
-                            maskedMText++;
-                        }
-                        else if (string.Equals(target.Kind, "DIMENSION", StringComparison.OrdinalIgnoreCase))
-                        {
-                            maskedDimension++;
-                        }
-                        else
-                        {
-                            maskedEntity++;
+                            case MaskPath.MTextNative:
+                                maskedMText++;
+                                break;
+                            case MaskPath.DimensionOverride:
+                                maskedDimension++;
+                                break;
+                            case MaskPath.EntityWipeout:
+                                maskedWipeout++;
+                                break;
                         }
 
                         // 遮罩要看得见，前提是遮挡物排在文字**下面**。
                         // 很多图的填充是后画的（排序表里排在最后 = 画在最上面），
-                        // 这时遮罩（在标注 *D 块里，随块一起）被填充整块盖住，
-                        // 图上看着就像"根本没加遮罩"。
-                        if (sendHatchToBack)
+                        // 这时遮罩被填充整块盖住，图上看着就像"根本没加遮罩"。
+                        if (sendHatchToBack && occluders != null && target.Rect.IsValid)
                         {
                             foreach (int idx in occluders.Query(target.Rect))
                             {
@@ -215,17 +190,22 @@ namespace Jun.Cad.Batch.Rules
 
                 if (maskedDimension > 0)
                 {
-                    parts.Add("标注 *D 块内 " + maskedDimension);
+                    parts.Add("标注文字 " + maskedDimension);
                 }
 
-                if (maskedEntity > 0)
+                if (maskedWipeout > 0)
                 {
-                    parts.Add((wantWipeout ? "Wipeout" : "Solid") + " " + maskedEntity);
+                    parts.Add("Wipeout " + maskedWipeout);
                 }
 
                 if (movedToBack > 0)
                 {
                     parts.Add("填充置后 " + movedToBack);
+                }
+
+                if (bringToFront && created > 0)
+                {
+                    parts.Add("文字前置 " + created);
                 }
 
                 result.AddNote(string.Format("共为 {0} 处文字加了遮罩（{1}）。", created, string.Join(" / ", parts)));
@@ -237,156 +217,238 @@ namespace Jun.Cad.Batch.Rules
         private static bool ApplyMask(
             RuleContext context,
             RuleExecutionResult result,
+            MaskRuntime runtime,
             MaskTarget target,
-            bool wantWipeout,
             bool rebuildText,
-            Layer maskLayer,
-            double ratio,
-            string degradeNote,
-            RuleAction action,
-            string dimMaskMode)
+            string dimMaskMode,
+            string maskTextBox,
+            bool bringToFront,
+            out MaskPath path)
         {
-            var mtext = target.Entity as MText;
-            if (mtext != null)
-            {
-                // 原生背景遮罩：不动实体、不动顺序、不动句柄
-                bool already = (mtext.BackgroundFillFlags & BackgroundFillFlags.UseDrawingWindowColor) != 0
-                               || (mtext.BackgroundFillFlags & BackgroundFillFlags.UseBackgroundFillColor) != 0;
+            path = MaskPath.None;
 
-                if (already)
+            var mtext = target.Entity as MText;
+            if (mtext != null && target.NativeMTextMask)
+            {
+                // 原生背景遮罩：不动实体内容，也绝不改 RectangleWidth
+                //（写 41 会让 AutoCAD 重新折行，把一行文字拆成两行）。
+                if (!MaskService.ApplyMTextBackground(mtext, runtime.PadRatio))
                 {
                     result.MarkSkipped("已有背景遮罩");
                     context.RecordSkip(mtext, "加遮罩（MTEXT 原生）", "已有背景遮罩", false, target.SpaceName);
                     return false;
                 }
 
-                mtext.BackgroundFillFlags |= BackgroundFillFlags.UseDrawingWindowColor;
-                mtext.BackgroundScale = 1.5;   // AutoCAD 默认值；该属性回读不保真，见文档
+                // 前置：Remove + Add 挪到容器末尾 = 绘制最上层，斜线/填充压不住遮罩。
+                // 代价是句柄变化（排序表路径走不通，见 MaskService.BringToFront 的注释）。
+                if (bringToFront)
+                {
+                    MaskService.BringToFront(target.Space, mtext);
+                }
 
                 result.MarkChanged("MTEXT");
                 context.RecordChange(mtext, "加遮罩（MTEXT 原生背景）",
-                    string.Format("遮挡 {0:P0}", ratio),
-                    "BackgroundFillFlags |= UseDrawingWindowColor",
+                    string.Format("字高 {0:0.##}，边界 {1:P0}", target.TextHeight, runtime.PadRatio),
+                    string.Format("BackgroundFillFlags |= 图形背景色；BackgroundScale = {0:0.###}", MaskService.MaskOffsetFactor(runtime.PadRatio)),
                     false,
-                    "原生背景遮罩，不新增实体；BackgroundScale 在 3.8.35 回读恒为 1.5，无法精确控制",
+                    (target.Note == null ? string.Empty : target.Note + "；")
+                    + "原生背景遮罩：不新增实体，填充用图形背景色"
+                    + (bringToFront ? "；已移到绘制顺序最上层（句柄已变）" : ""),
                     target.SpaceName);
+                path = MaskPath.MTextNative;
+                return true;
+            }
+
+            if (mtext != null)
+            {
+                // 紧贴遮罩：AutoCAD 的原生背景按**文字框宽度**（DXF 41）填充，
+                // 框比文字宽时遮罩一侧空出一大截（受控出图实测：框 60/文字 6，断口正好 60）。
+                // 改用我们自己算的紧贴 Wipeout——不动 41，零折行风险。
+                if (runtime.HasOverlappingWipeout(target.Space, target.Rect))
+                {
+                    result.MarkSkipped("已有紧贴遮罩");
+                    context.RecordSkip(mtext, "加遮罩（MTEXT 紧贴）", "同位置已有 Wipeout 遮罩", false, target.SpaceName);
+                    return false;
+                }
+
+                if (!rebuildText)
+                {
+                    result.MarkSkipped("需要重建文字");
+                    context.RecordBlocked(target.Entity, "加遮罩（MTEXT 紧贴）",
+                        "紧贴遮罩需要把 Wipeout 放到文字之前，而实体集合没有按位插入，只能移出文字再追加。"
+                        + "确认可接受时把 Action.MaskRebuildText 设为 true（默认已是 true）。",
+                        target.SpaceName);
+                    return false;
+                }
+
+                // 原生背景（可能是旧版本写的松弛框）清掉，否则它会继续画在 Wipeout 之上。
+                MaskService.ClearMTextBackground(mtext);
+
+                Wipeout tightMask = runtime.CreateWipeout(target);
+
+                // 移出文字 → 追加遮罩 → 文字回末尾：两者都到了最上层，遮罩在文字之下。
+                MaskService.PlaceMaskBefore(target.Space, mtext, tightMask);
+
+                result.MarkChanged("MTEXT");
+                context.RecordChange(mtext, "加遮罩（MTEXT 紧贴）",
+                    string.Format("字高 {0:0.##}，边界 {1:P0}", target.TextHeight, runtime.PadRatio),
+                    string.Format("Wipeout 紧贴实测文字 {0:0.#}×{1:0.#}", target.Rect.Width, target.Rect.Height),
+                    true,
+                    (target.Note == null ? string.Empty : target.Note + "；")
+                    + "原生背景填充按文字框宽度画、框宽时一侧留白过大，已换成紧贴文字的 Wipeout"
+                    + "（RectangleWidth 未动，不会折行；文字实体句柄已变）",
+                    target.SpaceName);
+                path = MaskPath.EntityWipeout;
                 return true;
             }
 
             if (target.Kind == "DIMENSION")
             {
-                var dimension = target.Entity as Dimension;
-
-                if (string.Equals(dimMaskMode, "BlockInternal", StringComparison.OrdinalIgnoreCase))
-                {
-                    return ApplyDimensionBlockMask(context, result, dimension, target, wantWipeout, maskLayer, ratio);
-                }
-
-                // 默认路径：遮罩必须排在标注之前，模型空间做不到（只能重建标注 → 断开关联）
-                result.MarkSkipped("标注遮罩未启用");
-                context.RecordBlocked(target.Entity, "加遮罩（DIMENSION）",
-                    "纯文件模式默认不处理标注：遮罩要排在标注之前只能重建标注（会断开关联）。"
-                    + "把 Action.DimensionMaskMode 设为 BlockInternal 可把遮罩放进标注的 *D 块（随标注移动，但标注重生成后会丢失）。",
-                    target.SpaceName);
-                return false;
+                return ApplyDimensionMask(context, result, runtime, target, dimMaskMode, bringToFront, out path);
             }
 
             if (!rebuildText)
             {
                 result.MarkSkipped("需要重建文字");
                 context.RecordBlocked(target.Entity, "加遮罩（" + target.Kind + "）",
-                    "该类型没有原生遮罩；新建 Wipeout/Solid 只能追加在文字之后（会盖住文字），"
-                    + "要放到下面必须重建文字实体并重新分配句柄。确认可接受时把 Action.MaskRebuildText 设为 true。",
+                    "该类型没有原生背景遮罩；Wipeout 只能追加在实体集合末尾（会盖住文字），"
+                    + "要放到文字之前必须重建文字实体并重新分配句柄。确认可接受时把 Action.MaskRebuildText 设为 true（默认已是 true）。",
                     target.SpaceName);
                 return false;
             }
 
-            Entity mask = wantWipeout
-                ? (Entity)MaskService.CreateWipeout(context.Document, target.Rect)
-                : MaskService.CreateSolid(target.Rect, RuleContext.Int(action.MaskSolidColorIndex, 255));
+            // 幂等：同位置已有几何一致的 Wipeout（多为对同一文件重复运行）就不再叠加。
+            if (runtime.HasOverlappingWipeout(target.Space, target.Rect))
+            {
+                result.MarkSkipped("已有遮罩");
+                context.RecordSkip(target.Entity, "加遮罩（" + target.Kind + "）", "同位置已有 Wipeout 遮罩", false, target.SpaceName);
+                return false;
+            }
 
-            mask.Layer = maskLayer;
+            Wipeout mask = runtime.CreateWipeout(target);
 
-            // 移出文字 → 追加遮罩 → 再把文字加回去：顺序变成 [遮罩, 文字]，遮罩在下
-            MaskService.PlaceMaskBefore(target.Space, target.Entity, mask);
+            // 移出文字 → 追加遮罩 → 再把文字加回去：顺序变成 [遮罩, 文字] 且都在最上层。
+            // 块属性不在空间实体表里，顺序代表是它所属的 Insert（搬属性会破坏块参照）。
+            MaskService.PlaceMaskBefore(target.Space, target.OrderAnchor ?? target.Entity, mask);
 
             result.MarkChanged(target.Kind);
             context.RecordChange(target.Entity, "加遮罩（" + target.Kind + "）",
-                string.Format("遮挡 {0:P0}", ratio),
-                string.Format("{0} {1:0.#}×{2:0.#}", wantWipeout ? "Wipeout" : "Solid",
-                    target.Rect.Width, target.Rect.Height),
+                string.Format("字高 {0:0.##}，边界 {1:P0}", target.TextHeight, runtime.PadRatio),
+                string.Format("Wipeout {0:0.#}×{1:0.#}", target.Rect.Width, target.Rect.Height),
                 true,
-                (degradeNote == null ? string.Empty : degradeNote + "；")
-                + "为把遮罩放到文字之下，文字实体已重建，句柄已改变",
+                (target.Note == null ? string.Empty : target.Note + "；")
+                + "Wipeout 擦除到图形背景；实体集合顺序已调整（文字与遮罩在最上层"
+                + (target.OrderAnchor == null ? "，该文字句柄已改变）" : "，文字本身未重建）"),
                 target.SpaceName);
 
+            path = MaskPath.EntityWipeout;
             return true;
         }
 
         /// <summary>
-        /// 把遮罩放进标注的 *D 缓存块，并排在块内文字之前。
+        /// 标注文字：写 **DIMTFILL=1**（图形背景色）的标注样式覆盖（DSTYLE 扩展数据）。
         ///
-        /// 坐标：*D 块内实体用的是世界坐标（实测块内 MText 的 InsertPoint 就是模型空间坐标），
-        /// 所以文字矩形可以原样用。
+        /// 为什么不用 *D 缓存块：实测（2026-11-02，AutoCAD 2025）缓存块里塞 Wipeout 或
+        /// 改缓存 MTEXT 的背景标志，标注一重生成（打开、REGENALL、编辑）就全部丢失——
+        /// 那是宿主按样式重算的临时几何。DIMTFILL 是标注的**原生**文字背景：
+        ///   * 1 = 图形背景色（与需求一致；2 才是 DIMTFILLCLR 指定色）；
+        ///   * 存在实体自带的样式覆盖里，重生成不丢；
+        ///   * 不新增实体、不动句柄、不碰 *D 块。
         ///
-        /// 顺序：块内实体集合同样只能追加，所以"移出文字 → 追加遮罩 → 再加回文字"，
-        /// 让遮罩落在文字下面。这里动的都是**缓存实体**（AutoCAD 会按标注重算），
-        /// 但它们的句柄确实会变，必须在预览里标出来。
+        /// 覆盖以"只改 DIMTFILL 一项"的方式追加，实体上已有的其它样式覆盖原样保留。
         /// </summary>
-        private static bool ApplyDimensionBlockMask(
+        private static bool ApplyDimensionMask(
             RuleContext context,
             RuleExecutionResult result,
-            Dimension dimension,
+            MaskRuntime runtime,
             MaskTarget target,
-            bool wantWipeout,
-            Layer maskLayer,
-            double ratio)
+            string dimMaskMode,
+            bool bringToFront,
+            out MaskPath path)
         {
-            if (dimension == null || dimension.Block == null)
+            path = MaskPath.None;
+
+            var dimension = target.Entity as Dimension;
+
+            if (string.Equals(dimMaskMode, "Off", StringComparison.OrdinalIgnoreCase))
             {
-                result.MarkSkipped("标注没有缓存块");
+                result.MarkSkipped("标注遮罩未启用");
                 context.RecordBlocked(dimension, "加遮罩（DIMENSION）",
-                    "该标注没有 *D 缓存块（可能尚未生成），无法把遮罩放进去。", target.SpaceName);
+                    "DimensionMaskMode=Off：标注文字不处理。改成 Native（默认）可给标注文字加背景填充。",
+                    target.SpaceName);
                 return false;
             }
 
-            Entity textInBlock = null;
-            foreach (Entity child in dimension.Block.Entities)
+            if (dimension == null)
             {
-                if (child is MText || (child is TextEntity && !(child is AttributeBase)))
-                {
-                    textInBlock = child;
-                    break;
-                }
-            }
-
-            if (textInBlock == null)
-            {
-                result.MarkSkipped("标注块内没有文字");
-                context.RecordBlocked(dimension, "加遮罩（DIMENSION）",
-                    "标注的 *D 块里找不到文字实体，无法确定遮罩顺序。", target.SpaceName);
+                result.MarkSkipped("不是标注实体");
                 return false;
             }
 
-            Entity mask = wantWipeout
-                ? (Entity)MaskService.CreateWipeout(context.Document, target.Rect)
-                : MaskService.CreateSolid(target.Rect, 255);
+            if (HasDrawingBackgroundFill(dimension))
+            {
+                result.MarkSkipped("标注文字已有背景遮罩");
+                context.RecordSkip(dimension, "加遮罩（DIMENSION · DIMTFILL）",
+                    "标注文字已有背景填充", false, target.SpaceName);
+                return false;
+            }
 
-            mask.Layer = maskLayer;
+            // 追加而非清空：实体上可能已有用户自己的样式覆盖（DIMTXT、DIMTMOVE…），
+            // 直接 SetStyleOverrideMap(新map) 会把它们全部抹掉。
+            DxfClassMap map = dimension.GetStyleOverrideMap();
+            if (map == null)
+            {
+                map = new DxfClassMap { Name = DimensionStyle.StyleOverrideEntryName };
+            }
 
-            MaskService.PlaceMaskBefore(dimension.Block, textInBlock, mask);
+            DxfProperty fill = DxfClassMap.Create<DimensionStyle>().DxfProperties[69];
+            fill.StoredValue = (short)DimensionTextBackgroundFillMode.DrawingBackgroundColor;
+            map.DxfProperties[69] = fill;
+
+            dimension.SetStyleOverrideMap(map);
+
+            // DIMTFILL 的填充画在标注自身几何里；后画的线照样能压住标注文字。
+            // 前置整个标注（线、箭头一起上去）是制图惯例，文字背景才不会被盖。
+            if (bringToFront)
+            {
+                MaskService.BringToFront(target.Space, dimension);
+            }
 
             result.MarkChanged("DIMENSION");
-            context.RecordChange(dimension, "加遮罩（DIMENSION · *D 块内）",
-                string.Format("遮挡 {0:P0}", ratio),
-                string.Format("{0} {1:0.#}×{2:0.#}", wantWipeout ? "Wipeout" : "Solid",
-                    target.Rect.Width, target.Rect.Height),
-                true,
-                "遮罩放在标注的 *D 缓存块内：会随标注移动，但标注一旦被编辑（块重生成）就会丢失；"
-                + "块内文字实体的句柄已改变",
+            context.RecordChange(dimension, "加遮罩（DIMENSION · DIMTFILL 覆盖）",
+                "DIMTFILL=1",
+                "DSTYLE 覆盖 + DIMTFILL=1（图形背景色）",
+                false,
+                (target.Note == null ? string.Empty : target.Note + "；")
+                + "标注文字背景填充：不新增实体，标注重生成后依然生效"
+                + (bringToFront ? "；标注已移到绘制顺序最上层（句柄已变）" : ""),
                 target.SpaceName);
-
+            path = MaskPath.DimensionOverride;
             return true;
+        }
+
+        /// <summary>该标注是否已经带 DIMTFILL=1（图形背景色）的样式覆盖。</summary>
+        private static bool HasDrawingBackgroundFill(Dimension dimension)
+        {
+            if (!dimension.HasStyleOverride)
+            {
+                return false;
+            }
+
+            DxfClassMap map = dimension.GetStyleOverrideMap();
+            if (map == null || !map.DxfProperties.TryGetValue(69, out DxfProperty fill))
+            {
+                return false;
+            }
+
+            try
+            {
+                return Convert.ToInt16(fill.StoredValue) == (short)DimensionTextBackgroundFillMode.DrawingBackgroundColor;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         // ------------------------------------------------------------------ 收集目标
@@ -396,13 +458,20 @@ namespace Jun.Cad.Batch.Rules
             RuleExecutionResult result,
             string dimMode,
             double padRatio,
-            double padAbs,
+            bool maskInsideBlocks,
+            string maskTextBox,
             List<MaskTarget> targets)
         {
+            // 块定义 → 引用它的块参照数量（预览里要说清"改这一处影响几个实例"）；用到才建
+            Dictionary<BlockRecord, int> refCounts = null;
+
             RuleFilter filter = context.Filter;
             if (filter.EntityTypes == null || filter.EntityTypes.Count == 0)
             {
-                var types = new List<string> { "TEXT", "MTEXT" };
+                // 不写 EntityTypes 时就是"所有受支持的文字"。
+                // ATTDEF 只覆盖常属性：非常属性的文字由块参照上的 ATTRIB 负责，
+                // 两边都加会在同一位置叠两个遮罩（视觉无差，但实体数和处理时间翻倍）。
+                var types = new List<string> { "TEXT", "MTEXT", "ATTDEF", "ATTRIB" };
                 if (!string.Equals(dimMode, "Off", StringComparison.OrdinalIgnoreCase))
                 {
                     types.Add("DIMENSION");
@@ -418,14 +487,35 @@ namespace Jun.Cad.Batch.Rules
                 Entity entity = hit.Entity;
 
                 // Hit 必须在任何 MarkSkipped 之前：否则"跳过"会大于"匹配"，
-                // 破坏 匹配 = 成功 + 跳过 + 失败（README 7.5 的 90 vs 71+228 就是这个 bug）
+                // 破坏 匹配 = 成功 + 跳过 + 失败
                 result.Hit();
 
                 if (hit.Depth > 0)
                 {
-                    // 块定义内的文字：遮罩要进块定义，会被所有实例共享，语义不对
-                    result.MarkSkipped("块内实体不处理");
-                    continue;
+                    // 块定义内的文字：遮罩要加进**块定义**，所有插入共享（改一次全生效）。
+                    if (!maskInsideBlocks)
+                    {
+                        result.MarkSkipped("块内文字不处理（MaskInsideBlocks=false）");
+                        continue;
+                    }
+
+                    if (hit.Owner != null && (DatabaseWalker.IsLayoutBlock(hit.Owner)
+                                              || DatabaseWalker.IsExternalReference(hit.Owner)
+                                              || hit.Owner.IsAnonymous))
+                    {
+                        // 布局块 = 顶层空间（depth 不会 >0，兜底）；外部参照不许改；*D/*T 由宿主重建
+                        result.MarkSkipped("块定义不可写");
+                        continue;
+                    }
+
+                    var attdef = entity as AttributeDefinition;
+                    if (attdef != null && (attdef.Flags & AttributeFlags.Constant) == 0)
+                    {
+                        // 非常属性的 ATTDEF 不画东西，真正显示的是块参照上的 ATTRIB；
+                        // 在定义里加遮罩会与插入级遮罩重叠，跳过。
+                        result.MarkSkipped("非常属性定义由块参照属性处理");
+                        continue;
+                    }
                 }
 
                 if (EntityScanner.ShouldSkipLocked(context, entity))
@@ -437,12 +527,18 @@ namespace Jun.Cad.Batch.Rules
                 var dimension = entity as Dimension;
                 if (dimension != null)
                 {
-                    MaskTarget dimTarget = BuildDimensionTarget(dimension, hit.Owner, dimMode, padRatio, padAbs,
+                    MaskTarget dimTarget = BuildDimensionTarget(dimension, hit.Owner, dimMode, padRatio,
                         EntityScanner.SpaceNameOf(hit));
                     if (dimTarget == null)
                     {
                         result.MarkSkipped("标注无可用文字位置");
                         continue;
+                    }
+
+                    if (hit.Depth > 0)
+                    {
+                        dimTarget.Note = DescribeBlockTarget(context, hit.Owner, ref refCounts);
+                        dimTarget.InsideBlock = true;
                     }
 
                     targets.Add(dimTarget);
@@ -456,18 +552,57 @@ namespace Jun.Cad.Batch.Rules
                     continue;
                 }
 
-                double pad = bounds.Height * padRatio + padAbs;
+                double height = CharacterHeightOf(entity);
+                double pad = height * padRatio;
+
+                // MTEXT 遮罩框模式：原生背景按**文字框宽度**（DXF 41）填充，
+                // 框比文字宽时遮罩一侧空一大截。Auto 模式在框明显松时改走紧贴 Wipeout。
+                bool nativeMTextMask = true;
+                XY[] maskVertices = TextBounds.TextMaskVertices(entity, pad);
+                Bounds2d maskRect = bounds.Inflate(pad);
+
+                var mtextEntity = entity as MText;
+                if (mtextEntity != null && !string.Equals(maskTextBox, "Native", StringComparison.OrdinalIgnoreCase))
+                {
+                    double tightWidth = TextBounds.MeasureMTextTightWidth(mtextEntity);
+                    bool useTight = string.Equals(maskTextBox, "Tight", StringComparison.OrdinalIgnoreCase)
+                                    || (tightWidth > 0 && mtextEntity.RectangleWidth > tightWidth * 1.05);
+
+                    if (useTight)
+                    {
+                        nativeMTextMask = false;
+                        maskVertices = TextBounds.TextMaskVertices(entity, pad, tightFrame: true);
+                        maskRect = TextBounds.AabbOf(maskVertices);
+                    }
+                }
+
+                if (maskVertices == null || !maskRect.IsValid || maskRect.Width <= 0 || maskRect.Height <= 0)
+                {
+                    result.MarkSkipped("无法估算文字矩形");
+                    continue;
+                }
+
                 targets.Add(new MaskTarget
                 {
                     Entity = entity,
                     Space = hit.Owner,
-                    Rect = bounds.Inflate(pad),
+                    Rect = maskRect,
+                    MaskVertices = maskVertices,
+                    NativeMTextMask = nativeMTextMask,
+                    TextHeight = height,
                     Kind = EntityFilter.DxfNameOf(entity),
-                    SpaceName = EntityScanner.SpaceNameOf(hit)
+                    SpaceName = EntityScanner.SpaceNameOf(hit),
+                    Note = hit.Depth > 0 ? DescribeBlockTarget(context, hit.Owner, ref refCounts) : null,
+                    InsideBlock = hit.Depth > 0
                 });
             }
 
             // ---- 块属性：挂在块参照上，不在块定义里 ----
+            if (!AcceptsAttributes(filter))
+            {
+                return;
+            }
+
             var insertFilter = new RuleFilter { EntityTypes = new List<string> { "INSERT" } };
             foreach (ScanHit hit in EntityScanner.Scan(context, EntityFilter.Build(insertFilter)))
             {
@@ -498,63 +633,173 @@ namespace Jun.Cad.Batch.Rules
                     // 属性是单独收集的（不在 BlockRecord.Entities 里），Hit 要在这里补
                     result.Hit();
 
-                    double pad = bounds.Height * padRatio + padAbs;
+                    double height = CharacterHeightOf(attribute);
+                    double pad = height * padRatio;
+
                     targets.Add(new MaskTarget
                     {
                         Entity = attribute,
                         Space = hit.Owner,
                         Rect = bounds.Inflate(pad),
+                        MaskVertices = TextBounds.TextMaskVertices(attribute, pad),
+                        TextHeight = height,
                         Kind = "ATTRIB",
-                        Note = "属性位置按 WCS 读取",
+                        // 顺序代表是 Insert：属性不在空间实体表里，搬它会破坏块参照
+                        OrderAnchor = insert,
+                        Note = "属性位置按 WCS 读取；遮罩排在所属块参照之前",
                         SpaceName = EntityScanner.SpaceNameOf(hit)
                     });
                 }
             }
         }
 
-        private static MaskTarget BuildDimensionTarget(
-            Dimension dimension, BlockRecord space, string dimMode, double padRatio, double padAbs, string spaceName)
+        /// <summary>配置是否包含块属性（默认的"所有文字"包含）。</summary>
+        private static bool AcceptsAttributes(RuleFilter filter)
         {
+            if (filter == null || filter.EntityTypes == null || filter.EntityTypes.Count == 0)
+            {
+                return true;
+            }
+
+            return filter.EntityTypes.Any(t => EntityFilter.MatchesType(new AttributeEntity(), t)
+                                               || string.Equals((t ?? string.Empty).Trim(), "ATTRIB", StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// 块内文字的说明文本。
+        ///
+        /// 必须写清"这一处改动会影响几个块参照"：块定义是共享的，改一次全部实例都变。
+        /// 用户看到"改了 1 处"却整张图都变了，比不改更糟。
+        /// </summary>
+        private static string DescribeBlockTarget(
+            RuleContext context, BlockRecord block, ref Dictionary<BlockRecord, int> cache)
+        {
+            if (block == null)
+            {
+                return null;
+            }
+
+            if (cache == null)
+            {
+                cache = BuildReferenceCounts(context.Document);
+            }
+
+            int count;
+            cache.TryGetValue(block, out count);
+
+            return string.Format("遮罩写进块定义「{0}」，直接引用 {1} 处", block.Name, count);
+        }
+
+        /// <summary>统计每个块定义被多少个块参照直接引用（一次遍历）。</summary>
+        private static Dictionary<BlockRecord, int> BuildReferenceCounts(CadDocument doc)
+        {
+            var map = new Dictionary<BlockRecord, int>();
+            if (doc == null)
+            {
+                return map;
+            }
+
+            foreach (BlockRecord owner in doc.BlockRecords)
+            {
+                if (owner == null)
+                {
+                    continue;
+                }
+
+                foreach (Entity child in owner.Entities)
+                {
+                    var insert = child as Insert;
+                    if (insert == null || insert.Block == null)
+                    {
+                        continue;
+                    }
+
+                    int count;
+                    map.TryGetValue(insert.Block, out count);
+                    map[insert.Block] = count + 1;
+                }
+            }
+
+            return map;
+        }
+
+        private static MaskTarget BuildDimensionTarget(
+            Dimension dimension, BlockRecord space, string dimMode, double padRatio, string spaceName)
+        {
+            if (string.Equals(dimMode, "Off", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
             bool hasExplicitText = !string.IsNullOrEmpty(dimension.Text) && dimension.Text != "<>";
             if (!hasExplicitText && string.Equals(dimMode, "ExplicitOnly", StringComparison.OrdinalIgnoreCase))
             {
                 return null;
             }
 
-            XYZ anchor;
-            double height;
-            double rotation;
-            if (!TextBounds.TryGetDimensionTextAnchor(dimension, out anchor, out height, out rotation))
+            // 标注遮罩走 DIMTFILL 覆盖，不需要几何。矩形只用来找"压住标注文字的填充"
+            //（填充置后），有 *D 缓存文字就算一下，没有就放弃——不影响遮罩本身。
+            Bounds2d rect = default(Bounds2d);
+            Entity cachedText = FindDimensionText(dimension);
+            if (cachedText != null && TextBounds.TryGet(cachedText, out Bounds2d box)
+                && box.Width > 0 && box.Height > 0)
             {
-                return null;
+                rect = box;
             }
-
-            if (height <= 0)
-            {
-                height = dimension.Style == null ? 2.5 : dimension.Style.TextHeight;
-            }
-
-            if (height <= 0)
-            {
-                return null;
-            }
-
-            string text = TextBounds.PlainTextOf(dimension);
-            double width = Math.Max(TextBounds.MeasureWidth(text, height), height);
-
-            Bounds2d rect = TextBounds.RotatedRect(anchor, 0, -height, width, height, rotation);
-            double pad = height * padRatio + padAbs;
 
             return new MaskTarget
             {
                 Entity = dimension,
                 Space = space,
-                Rect = rect.Inflate(pad),
+                Rect = rect,
+                CachedText = cachedText,
                 Kind = "DIMENSION",
-                Static = true,
-                Note = "静态遮罩",
+                Note = "标注文字背景填充",
                 SpaceName = spaceName
             };
+        }
+
+        /// <summary>*D 缓存块里的文字实体（优先 MTEXT）——遮罩要排在它之前。</summary>
+        private static Entity FindDimensionText(Dimension dimension)
+        {
+            if (dimension == null || dimension.Block == null)
+            {
+                return null;
+            }
+
+            Entity textEntity = null;
+            foreach (Entity child in dimension.Block.Entities)
+            {
+                if (child is MText)
+                {
+                    return child;
+                }
+
+                if (textEntity == null && child is TextEntity && !(child is AttributeBase))
+                {
+                    textEntity = child;
+                }
+            }
+
+            return textEntity;
+        }
+
+        /// <summary>文字的字高（不是包围盒高度）。多行 MTEXT 的盒高是行数倍，留白必须按字高算。</summary>
+        private static double CharacterHeightOf(Entity entity)
+        {
+            var mtext = entity as MText;
+            if (mtext != null)
+            {
+                return mtext.Height > 0 ? mtext.Height : 2.5;
+            }
+
+            var text = entity as TextEntity;
+            if (text != null)
+            {
+                return text.Height > 0 ? text.Height : 2.5;
+            }
+
+            return 2.5;
         }
 
         // ------------------------------------------------------------------ 遮挡判定
@@ -606,26 +851,15 @@ namespace Jun.Cad.Batch.Rules
         }
 
         /// <summary>
-        /// 遮挡占比。
+        /// 把"盖住被遮罩文字的填充"送到绘制顺序最底层（MaskSendHatchToBack，默认开）。
         ///
-        /// 分两类算，因为"包围盒相交"对细长图形是错的：
-        ///   * **线状**（LINE / CIRCLE 环）：只看它是否真的穿过文字矩形，穿过一次记 0.25；
-        ///     一条对角线斜穿整张图的包围盒会盖住所有文字，按面积算会把整图判成 100% 遮挡；
-        ///   * **面状**（HATCH / SOLID / 其它）：按包围盒相交面积占比累加。
+        /// **注意（2026-11-02 实测）：这条路径实际上已失效**——它通过 SORTENTS 排序表实现，
+        /// 而 ACadSharp 写出的块记录扩展字典 AutoCAD 读不到，排序表根本不落地（见
+        /// MaskService.BringToFront 的注释）。文字遮罩的绘制顺序现在靠
+        /// MaskBringTextToFront（把文字+遮罩推到集合末尾 = 最上层）保证，
+        /// 填充压不压文字已无关紧要。保留本开关只为兼容旧配置，不再依赖。
         ///
-        /// 结果封顶 1.0。阈值默认 0.05，即"一条线穿过"或"5% 面积被盖"就加遮罩。
-        /// </summary>
-        /// <summary>
-        /// 把"盖住被遮罩文字的填充"送到绘制顺序最底层。
-        ///
-        /// 为什么必须做：遮罩要么是 MTEXT 背景、要么在标注的 *D 块里，都跟着文字的绘制位置走。
-        /// 填充如果排在文字之后（排序表里 sort handle 更大 = 画在上面），遮罩就被填充整块盖住，
-        /// 图上看着和"根本没加遮罩"一模一样，而数据里明明有——这个坑排查了很久。
-        ///
-        /// **命名是反的**：这个库的 <c>MoveToTop</c> 才等于 AutoCAD 的"置后"
-        /// （排序表按 sort handle 升序绘制，MoveToTop 给的是最小 handle，所以画在最下面）；
-        /// <c>MoveToBottom</c> 反而把它推到最上层。实测：源图填充 handle 21540/21541 排在表尾 = 画在最上面；
-        /// 调 MoveToTop 之后变成 C1A6/C1A7 排在表头 = 画在最下面。
+        /// **命名是反的**：这个库的 <c>MoveToTop</c> 才等于 AutoCAD 的"置后"。
         /// </summary>
         private static int PushHatchesToBack(
             RuleContext context, RuleExecutionResult result, BlockRecord space, List<Hatch> hatches)
@@ -648,9 +882,19 @@ namespace Jun.Cad.Batch.Rules
             return moved;
         }
 
+        /// <summary>
+        /// 遮挡占比。
+        ///
+        /// 分两类算，因为"包围盒相交"对细长图形是错的：
+        ///   * **线状**（LINE / CIRCLE 环）：只看它是否真的穿过文字矩形，穿过一次记 0.25；
+        ///   * **面状**（HATCH / SOLID / 其它）：按包围盒相交面积占比累加。
+        ///
+        /// 结果封顶 1.0。阈值默认 0.05，即"一条线穿过"或"5% 面积被盖"就加遮罩。
+        /// 默认配置下（MaskOnlyWhenOccluded=false）本函数不会被调用。
+        /// </summary>
         private static double ComputeOcclusion(Bounds2d rect, BoundsIndex index)
         {
-            if (rect.Area <= 0)
+            if (rect.Area <= 0 || index == null)
             {
                 return 0;
             }
@@ -726,44 +970,87 @@ namespace Jun.Cad.Batch.Rules
 
         // ------------------------------------------------------------------ 解析
 
-        private static string NormalizeMaskMode(string text)
+        private static double NormalizePaddingRatio(double ratio)
+        {
+            if (double.IsNaN(ratio) || double.IsInfinity(ratio))
+            {
+                return MaskService.DefaultPaddingRatio;
+            }
+
+            if (ratio < 0)
+            {
+                return 0;
+            }
+
+            return ratio > 2 ? 2 : ratio;
+        }
+
+        /// <summary>
+        /// 遮罩模式：只接受 Auto / Wipeout，两者都表示"原生遮罩"。
+        /// Solid 与未知值直接报错——静默换成别的模式比报错糟得多。
+        /// </summary>
+        private static void RequireNativeMaskMode(string text)
         {
             if (string.IsNullOrWhiteSpace(text))
             {
-                return "Auto";
+                return;
             }
 
-            string t = text.Trim();
-            if (string.Equals(t, "Wipeout", StringComparison.OrdinalIgnoreCase))
+            string mode = text.Trim();
+            if (string.Equals(mode, "Auto", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(mode, "Wipeout", StringComparison.OrdinalIgnoreCase))
             {
-                return "Wipeout";
+                return;
             }
 
-            if (string.Equals(t, "Solid", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Solid";
-            }
-
-            return "Auto";
+            throw new RuleValidationException(
+                "MaskMode=\"" + mode + "\" 不受支持：本规则只有原生遮罩一条路（MTEXT 背景填充 + Wipeout 擦除），"
+                + "没有 2D Solid 兜底。把 MaskMode 改成 Auto 或删掉这一项。");
         }
 
         private static string NormalizeDimensionMaskMode(string text)
         {
             if (string.IsNullOrWhiteSpace(text))
             {
-                return "Off";
+                return "Native";
             }
 
-            return string.Equals(text.Trim(), "BlockInternal", StringComparison.OrdinalIgnoreCase)
-                ? "BlockInternal"
-                : "Off";
+            // "BlockInternal" 是旧值：*D 缓存块方案已退役，读到它按 Native 处理，
+            // 让老配置继续可用（在日志里说明一次比报错友好）。
+            return string.Equals(text.Trim(), "Off", StringComparison.OrdinalIgnoreCase)
+                ? "Off"
+                : "Native";
+        }
+
+        /// <summary>
+        /// 遮罩框模式：Auto（默认）/ Native / Tight，未知值硬报错——
+        /// 静默换成别的模式会让"为什么遮罩变宽/变紧"变得无法解释。
+        /// </summary>
+        private static string NormalizeMaskTextBox(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return "Auto";
+            }
+
+            string mode = text.Trim();
+            if (string.Equals(mode, "Auto", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(mode, "Native", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(mode, "Tight", StringComparison.OrdinalIgnoreCase))
+            {
+                return mode;
+            }
+
+            throw new RuleValidationException(
+                "MaskTextBox=\"" + mode + "\" 不受支持：可选 Auto（默认，框宽贴文字才用原生背景）、"
+                + "Native（始终原生背景，按文字框宽度填充）、Tight（始终紧贴文字的 Wipeout）。");
         }
 
         private static string NormalizeDimensionMode(string text)
         {
             if (string.IsNullOrWhiteSpace(text))
             {
-                return "ExplicitOnly";
+                return "All";
             }
 
             if (string.Equals(text.Trim(), "Off", StringComparison.OrdinalIgnoreCase))
@@ -771,7 +1058,166 @@ namespace Jun.Cad.Batch.Rules
                 return "Off";
             }
 
-            return string.Equals(text.Trim(), "All", StringComparison.OrdinalIgnoreCase) ? "All" : "ExplicitOnly";
+            return string.Equals(text.Trim(), "ExplicitOnly", StringComparison.OrdinalIgnoreCase) ? "ExplicitOnly" : "All";
+        }
+
+        /// <summary>遮罩实际走的路径（汇总统计用，必须反映真实执行分支而不是配置开关）。</summary>
+        private enum MaskPath
+        {
+            None,
+            MTextNative,
+            DimensionOverride,
+            EntityWipeout
+        }
+
+        /// <summary>
+        /// 一次执行内的遮罩工厂：图层、WIPEOUTFRAME、编码自检都按需做一次。
+        ///
+        /// 懒加载的理由：只处理 MTEXT 的图不需要 _MASK 图层，也不该被写一条
+        /// `ACAD_WIPEOUT_VARS`——那会凭空给用户图纸加设置。
+        /// </summary>
+        private sealed class MaskRuntime
+        {
+            private readonly RuleContext _context;
+            private readonly RuleAction _action;
+            private readonly string _layerName;
+
+            private Layer _layer;
+            private bool _frameHidden;
+            private bool _encodingChecked;
+            private readonly Dictionary<BlockRecord, List<Bounds2d>> _wipeoutBoxes = new Dictionary<BlockRecord, List<Bounds2d>>();
+
+            public MaskRuntime(RuleContext context, RuleAction action, string layerName, double padRatio)
+            {
+                _context = context;
+                _action = action;
+                _layerName = layerName;
+                PadRatio = padRatio;
+            }
+
+            public double PadRatio { get; private set; }
+
+            public Wipeout CreateWipeout(MaskTarget target)
+            {
+                if (!_frameHidden)
+                {
+                    // 边框默认"显示并打印"（WIPEOUTFRAME=1），不关掉的话每个遮罩
+                    // 出图时都会多一个矩形框。建第一个遮罩之前改一次，整张图生效。
+                    MaskService.HideWipeoutFrame(_context.Document);
+                    _frameHidden = true;
+                }
+
+                Wipeout wipeout = target.MaskVertices == null
+                    ? MaskService.CreateWipeout(target.Rect)
+                    : MaskService.CreateWipeout(target.MaskVertices);
+
+                if (!_encodingChecked)
+                {
+                    string reason;
+                    if (!MaskService.IsWipeoutEncoded(wipeout, out reason))
+                    {
+                        // 没有 2D Solid 兜底：写不出来就停，让用户看到原因。
+                        throw new RuleValidationException("Wipeout 编码不可用：" + reason + "。本规则没有 Solid 兜底。");
+                    }
+
+                    _encodingChecked = true;
+                }
+
+                wipeout.Layer = MaskLayer();
+                RegisterWipeout(target.Space, target.Rect);
+                return wipeout;
+            }
+
+            /// <summary>
+            /// 同位置是否已经有一个几何一致的 Wipeout。
+            ///
+            /// 幂等保护：对同一输出文件重复运行时，TEXT/紧贴 MTEXT 的 Wipeout 会在
+            /// 完全相同的位置再叠一个——渲染结果不变但实体数翻倍。按"包围盒中心与
+            /// 尺寸都在容差内"判重，宁可漏加（视觉上已有遮罩）也不重复叠加。
+            /// 代价：两段完全重叠的相同文字只处理第一个，极罕见，可接受。
+            /// </summary>
+            public bool HasOverlappingWipeout(BlockRecord space, Bounds2d box)
+            {
+                if (space == null || !box.IsValid || box.Area <= 0)
+                {
+                    return false;
+                }
+
+                List<Bounds2d> boxes;
+                if (!_wipeoutBoxes.TryGetValue(space, out boxes))
+                {
+                    boxes = new List<Bounds2d>();
+                    foreach (Entity entity in space.Entities)
+                    {
+                        if (!(entity is Wipeout))
+                        {
+                            continue;
+                        }
+
+                        Bounds2d existing = TextBounds.ForWipeout((Wipeout)entity);
+                        if (existing.IsValid && existing.Area > 0)
+                        {
+                            boxes.Add(existing);
+                        }
+                    }
+
+                    _wipeoutBoxes[space] = boxes;
+                }
+
+                foreach (Bounds2d existing in boxes)
+                {
+                    if (SameBox(existing, box))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private void RegisterWipeout(BlockRecord space, Bounds2d box)
+            {
+                List<Bounds2d> boxes;
+                if (!_wipeoutBoxes.TryGetValue(space, out boxes))
+                {
+                    boxes = new List<Bounds2d>();
+                    _wipeoutBoxes[space] = boxes;
+                }
+
+                boxes.Add(box);
+            }
+
+            private static bool SameBox(Bounds2d a, Bounds2d b)
+            {
+                double tolerance = Math.Max(1e-4, Math.Max(a.Width, a.Height) * 0.01);
+                return Math.Abs(a.CenterX - b.CenterX) <= tolerance
+                       && Math.Abs(a.CenterY - b.CenterY) <= tolerance
+                       && Math.Abs(a.Width - b.Width) <= tolerance
+                       && Math.Abs(a.Height - b.Height) <= tolerance;
+            }
+
+            private Layer MaskLayer()
+            {
+                if (_layer != null)
+                {
+                    return _layer;
+                }
+
+                _layer = LayerService.EnsureLayer(_context.Document, _layerName, _action, _context.Log, _context.Resources);
+                if (_layer == null)
+                {
+                    throw new RuleValidationException("遮罩图层「" + _layerName + "」不存在且无法创建。");
+                }
+
+                // Wipeout 依靠图层参与出图；不可打印的图层上等于没有遮罩。
+                if (!RuleContext.Bool(_action.MaskLayerPlottable, true))
+                {
+                    _layer.PlotFlag = false;
+                    _context.Log.Warn("MaskLayerPlottable=false：该图层上的 Wipeout 遮罩不会出现在打印结果里。");
+                }
+
+                return _layer;
+            }
         }
 
         private sealed class MaskTarget
@@ -779,10 +1225,33 @@ namespace Jun.Cad.Batch.Rules
             public Entity Entity;
             public BlockRecord Space;
             public Bounds2d Rect;
+            public XY[] MaskVertices;
+
+            /// <summary>
+            /// MTEXT 是否走原生背景遮罩（false = 紧贴 Wipeout）。
+            /// 判定依据 MaskTextBox：Auto 模式在文字框 (41) 明显比实测文字宽时为 false。
+            /// 非 MTEXT 目标此值无意义（恒 true）。
+            /// </summary>
+            public bool NativeMTextMask;
+
+            /// <summary>文字的字高（留白按它算，不是包围盒高度）。</summary>
+            public double TextHeight;
+
+            /// <summary>
+            /// 在实体流里代表"文字位置"的实体：普通文字就是自己（null），
+            /// 块属性则是它所属的 Insert。
+            /// </summary>
+            public Entity OrderAnchor;
+
+            /// <summary>标注 *D 块里的文字实体（有就用它的几何，比估算可靠）。</summary>
+            public Entity CachedText;
+
             public string Kind;
-            public bool Static;
             public string Note;
             public string SpaceName;
+
+            /// <summary>目标在块定义内部（遮挡判定跳过，见 Execute 里的说明）。</summary>
+            public bool InsideBlock;
         }
 
         /// <summary>包围盒网格索引：避免 O(n²) 的遮挡判定（1 万实体的图上是必须的）。</summary>

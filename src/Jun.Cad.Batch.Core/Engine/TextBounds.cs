@@ -416,9 +416,9 @@ namespace Jun.Cad.Batch.Engine
         // ------------------------------------------------------------------ WIPEOUT
 
         /// <summary>
-        /// Wipeout 的盒子必须自己算：库的实现是"裁剪顶点 + InsertPoint"，**不经过 U/V 向量**。
-        /// 实测旋转 90° 的遮罩（U=+Y, V=-X，裁剪 10×4）库返回 (0,0)-(10,4)，
-        /// 真实范围是 X:-4..0, Y:0..10。
+        /// 按 WIPEOUT 的图像像素坐标变换计算 WCS 包围盒。
+        /// 裁剪顶点是归一化像素坐标，需经 Size、UVector 和 VVector 变换；
+        /// 直接把裁剪点加到 InsertPoint 会使轴对齐/旋转遮罩都算错。
         /// </summary>
         public static Bounds2d ForWipeout(CadWipeoutBase wipeout)
         {
@@ -431,12 +431,15 @@ namespace Jun.Cad.Batch.Engine
             XYZ origin = wipeout.InsertPoint;
             XYZ u = wipeout.UVector;
             XYZ v = wipeout.VVector;
+            double imageHeight = wipeout.Size.Y;
             bool any = false;
 
             foreach (XY corner in wipeout.ClipBoundaryVertices)
             {
-                double x = origin.X + corner.X * u.X + corner.Y * v.X;
-                double y = origin.Y + corner.X * u.Y + corner.Y * v.Y;
+                double pixelX = corner.X + 0.5;
+                double pixelY = imageHeight - corner.Y - 0.5;
+                double x = origin.X + pixelX * u.X + pixelY * v.X;
+                double y = origin.Y + pixelX * u.Y + pixelY * v.Y;
 
                 if (!any)
                 {
@@ -456,42 +459,163 @@ namespace Jun.Cad.Batch.Engine
 
         // ------------------------------------------------------------------ 通用
 
-        /// <summary>把一个局部矩形按锚点 + 旋转展开成世界坐标 AABB。</summary>
-        public static Bounds2d RotatedRect(XYZ anchor, double dx, double dy, double width, double height, double rotation)
+        /// <summary>把局部矩形变换到 WCS，保留四角方向（用于真实的旋转 Wipeout 裁剪多边形）。</summary>
+        public static XY[] RotatedRectVertices(
+            XYZ anchor, double dx, double dy, double width, double height, double rotation, double padding = 0)
         {
             double cos = Math.Cos(rotation);
             double sin = Math.Sin(rotation);
+            double left = dx - padding;
+            double bottom = dy - padding;
+            double right = dx + width + padding;
+            double top = dy + height + padding;
 
-            var corners = new[]
+            var local = new[]
             {
-                new[] { dx, dy },
-                new[] { dx + width, dy },
-                new[] { dx + width, dy + height },
-                new[] { dx, dy + height }
+                new XY(left, bottom),
+                new XY(right, bottom),
+                new XY(right, top),
+                new XY(left, top)
             };
 
-            var result = default(Bounds2d);
-            bool any = false;
-
-            foreach (double[] c in corners)
+            var result = new XY[local.Length];
+            for (int i = 0; i < local.Length; i++)
             {
-                double x = anchor.X + c[0] * cos - c[1] * sin;
-                double y = anchor.Y + c[0] * sin + c[1] * cos;
-
-                if (!any)
-                {
-                    result = new Bounds2d(x, y, x, y);
-                    any = true;
-                }
-                else
-                {
-                    result = new Bounds2d(
-                        Math.Min(result.MinX, x), Math.Min(result.MinY, y),
-                        Math.Max(result.MaxX, x), Math.Max(result.MaxY, y));
-                }
+                result[i] = new XY(
+                    anchor.X + local[i].X * cos - local[i].Y * sin,
+                    anchor.Y + local[i].X * sin + local[i].Y * cos);
             }
 
             return result;
+        }
+
+        /// <summary>把一个局部矩形按锚点 + 旋转展开成世界坐标 AABB。</summary>
+        public static Bounds2d RotatedRect(XYZ anchor, double dx, double dy, double width, double height, double rotation)
+        {
+            XY[] corners = RotatedRectVertices(anchor, dx, dy, width, height, rotation);
+            return AabbOf(corners);
+        }
+
+        /// <summary>一组顶点的轴对齐包围盒。</summary>
+        public static Bounds2d AabbOf(XY[] vertices)
+        {
+            if (vertices == null || vertices.Length == 0)
+            {
+                return default(Bounds2d);
+            }
+
+            double minX = vertices[0].X;
+            double maxX = vertices[0].X;
+            double minY = vertices[0].Y;
+            double maxY = vertices[0].Y;
+            for (int i = 1; i < vertices.Length; i++)
+            {
+                minX = Math.Min(minX, vertices[i].X);
+                maxX = Math.Max(maxX, vertices[i].X);
+                minY = Math.Min(minY, vertices[i].Y);
+                maxY = Math.Max(maxY, vertices[i].Y);
+            }
+
+            return new Bounds2d(minX, minY, maxX, maxY);
+        }
+
+        /// <summary>
+        /// MTEXT 实际文字的估测宽度（最宽一行，逐字符累加）。
+        /// 用于判断"文字框 (41) 是否明显比文字宽"——原生背景填充按框宽画，
+        /// 框宽松时遮罩一侧会空出一大截。这是估算值，误差 ±10% 量级。
+        /// </summary>
+        public static double MeasureMTextTightWidth(MText mtext)
+        {
+            if (mtext == null)
+            {
+                return 0;
+            }
+
+            double height = mtext.Height > 0 ? mtext.Height : 2.5;
+            double maxLine = 0;
+            foreach (string line in MTextTokenizer.ToLines(mtext.Value))
+            {
+                maxLine = Math.Max(maxLine, MeasureWidth(line, height));
+            }
+
+            return maxLine;
+        }
+
+        /// <summary>
+        /// 获取 TEXT/MTEXT/ATTRIB 真实朝向的遮罩四角。返回 null 表示无法从实体计算，
+        /// 调用方可退化为轴对齐包围盒。Padding 在文字自身坐标系内应用，避免旋转后变成大 AABB。
+        ///
+        /// <paramref name="tightFrame"/> 只对 MTEXT 有意义：原生背景填充是按**文字框宽度**
+        /// (DXF 41) 画的（受控出图实测：框 60 / 文字 6，擦除断口正好 60），框比文字宽时
+        /// 遮罩一侧空出一大截。tightFrame=true 时宽度改用**实测文字宽度**（逐字符估算），
+        /// 让遮罩贴住文字本体；误差只影响留白多少，绝不会再引起折行——因为我们从不改 41。
+        /// </summary>
+        public static XY[] TextMaskVertices(Entity entity, double padding, bool tightFrame = false)
+        {
+            var mtext = entity as MText;
+            if (mtext != null)
+            {
+                double height = mtext.Height > 0 ? mtext.Height : 2.5;
+                double spacing = mtext.LineSpacing > 0 ? mtext.LineSpacing : 1.0;
+                List<string> lines = MTextTokenizer.ToLines(mtext.Value);
+                if (lines.Count == 0) lines.Add(string.Empty);
+                double maxLine = 0;
+                foreach (string line in lines) maxLine = Math.Max(maxLine, MeasureWidth(line, height));
+                double width = tightFrame || mtext.RectangleWidth <= 0 ? maxLine : mtext.RectangleWidth;
+                double boxHeight = height + (lines.Count - 1) * height * spacing;
+                double dx = 0;
+                double dy = 0;
+                switch (mtext.AttachmentPoint)
+                {
+                    case AttachmentPointType.TopCenter:
+                    case AttachmentPointType.MiddleCenter:
+                    case AttachmentPointType.BottomCenter: dx = -width * 0.5; break;
+                    case AttachmentPointType.TopRight:
+                    case AttachmentPointType.MiddleRight:
+                    case AttachmentPointType.BottomRight: dx = -width; break;
+                }
+                switch (mtext.AttachmentPoint)
+                {
+                    case AttachmentPointType.MiddleLeft:
+                    case AttachmentPointType.MiddleCenter:
+                    case AttachmentPointType.MiddleRight: dy = -boxHeight * 0.5; break;
+                    case AttachmentPointType.BottomLeft:
+                    case AttachmentPointType.BottomCenter:
+                    case AttachmentPointType.BottomRight: dy = -boxHeight; break;
+                }
+                return RotatedRectVertices(mtext.InsertPoint, dx, dy, width, boxHeight, mtext.Rotation, padding);
+            }
+
+            var text = entity as TextEntity;
+            if (text != null)
+            {
+                double height = text.Height > 0 ? text.Height : 2.5;
+                double widthFactor = text.WidthFactor > 0 ? text.WidthFactor : 1.0;
+                double width = MeasureWidth(text.Value ?? string.Empty, height * widthFactor);
+                XYZ anchor = text.InsertPoint;
+                bool usesAlignmentPoint = text.HorizontalAlignment != TextHorizontalAlignment.Left
+                                          || text.VerticalAlignment != TextVerticalAlignmentType.Baseline;
+                if (usesAlignmentPoint && (Math.Abs(text.AlignmentPoint.X) > 1e-9 || Math.Abs(text.AlignmentPoint.Y) > 1e-9))
+                    anchor = text.AlignmentPoint;
+                double dx = 0;
+                switch (text.HorizontalAlignment)
+                {
+                    case TextHorizontalAlignment.Center:
+                    case TextHorizontalAlignment.Middle:
+                    case TextHorizontalAlignment.Aligned:
+                    case TextHorizontalAlignment.Fit: dx = -width * 0.5; break;
+                    case TextHorizontalAlignment.Right: dx = -width; break;
+                }
+                double dy = 0;
+                switch (text.VerticalAlignment)
+                {
+                    case TextVerticalAlignmentType.Middle: dy = -height * 0.5; break;
+                    case TextVerticalAlignmentType.Top: dy = -height; break;
+                }
+                return RotatedRectVertices(anchor, dx, dy, width, height, text.Rotation, padding);
+            }
+
+            return null;
         }
 
         /// <summary>

@@ -7,11 +7,9 @@ using Jun.Cad.Batch.Engine.Preflight;
 namespace Jun.Cad.Batch.Win
 {
     /// <summary>
-    /// 前置检查面板：把能力探测的结果**显示出来**，而不是只写进日志。
-    ///
-    /// 为什么要单独一屏：用户在执行前必须知道
-    /// "这次遮罩会不会降级成 Solid""表格规则是不是压根没验证过"，
-    /// 这些信息藏在日志里等于没有。
+    /// Display capability probes before execution instead of hiding them in logs.
+    /// Report whether native WIPEOUT is available and whether table writes were tested.
+    /// Native mask failures never fall back to 2D Solid.
     /// </summary>
     internal sealed class PreflightDialog : Form
     {
@@ -148,7 +146,7 @@ namespace Jun.Cad.Batch.Win
 
             _summary.Text = string.Format(
                 failed > 0
-                    ? "有 {0} 项失败：相关规则会自动降级，降级原因会写进差异预览。另有降级 {1} 项、未测 {2} 项。"
+                    ? "Failed: {0}. Native mask failures have no Solid fallback; see preview details. Degraded: {1}; untested: {2}."
                     : "没有失败项。降级 {1} 项、未测 {2} 项（降级不是错误，是纯文件模式的边界）。",
                 failed, degraded, notTested);
 

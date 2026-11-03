@@ -11,7 +11,14 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="ACadSharp" Version="3.8.35" />
+    <!--
+      引用本地修复版 ACadSharp 源码（Wipeout 写出修正），不走 NuGet。
+      上游 csproj 是多目标（net8.0/net9.0/net10.0/net48/netstandard2.x），
+      这里只让 MSBuild 编 net8.0 那一份：本机没装 net9/net10 SDK 和 net48 目标包，
+      全编会失败，而且 Core 本身就是 net8.0。
+    -->
+    <ProjectReference Include="..\..\..\ACadSharp-v3.8.35\src\ACadSharp\ACadSharp.csproj"
+                      AdditionalProperties="LangVersion=preview" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 

@@ -163,34 +163,53 @@
       }
     },
     {
-      "Name": "给被遮挡的文字加遮罩",
+      "Name": "Native background masks for all supported text",
       "Type": "TextMask",
       "Enabled": false,
-      // **不要手写 EntityTypes**：不写时默认就是 TEXT / MTEXT / DIMENSION。
-      // 一旦写了，就只剩列出来的那几种——写成 ["MTEXT"] 会让 DimensionTextMode 彻底失效，
-      // 标注被过滤器筛掉、扫都扫不到，而界面上看不出任何异常。
+      // Omit EntityTypes to include TEXT / MTEXT / ATTDEF / ATTRIB / DIMENSION.
+      // Tables, multileaders, and dynamic anonymous-block text are not supported.
       "Filter": {
-        "Scope": "ModelOnly"
+        "Scope": "ModelAndLayouts"
       },
       "Action": {
-        // Auto=MTEXT 用原生背景填充、TEXT/ATTRIB 重建带遮罩的文字；
-        // Wipeout=只走新建 Wipeout（探测不过会直接报错）；Solid=用 2D Solid
+        // Auto and Wipeout both use native masks; no Solid fallback or RGB fill option.
+        // MTEXT uses its native drawing-background fill; TEXT/ATTRIB use WIPEOUT.
+        // WIPEOUT naturally follows the drawing background. Existing true-color white
+        // is only a frame workaround for white-paper plots, not the mask fill color.
         "MaskMode": "Auto",
-        // 只给"确实被别的对象压住"的文字加，避免整张图铺满遮罩
-        "MaskOnlyWhenOccluded": true,
+        "MaskOnlyWhenOccluded": false,
+        // Used only when MaskOnlyWhenOccluded is true.
         "MaskMinOccludedRatio": 0.05,
+        // Each side = the text's own character height × 0.15 (15%), not its bounding-box height.
+        // MTEXT's native factor is 1 + ratio = 1.15. Finite ratios from 0 to 2 are valid.
+        // The factor persists in the file (group 45); the background flags are written as
+        // 90=3 (fill on + drawing-window color) so AutoCAD accepts the whole set.
         "MaskPaddingRatio": 0.15,
+        // How the MTEXT mask box is sized. AutoCAD fills the native background across
+        // the whole text frame (DXF 41), so a frame wider than the text leaves blank
+        // mask on one side. Auto keeps native when the frame fits the text and switches
+        // to a tight WIPEOUT otherwise (RectangleWidth is never changed: no reflow).
+        // Native = always native background; Tight = always a tight WIPEOUT.
+        "MaskTextBox": "Auto",
+        // Move masked text and its mask to the top of the draw order so later-drawn
+        // lines and hatches cannot cover them. The moved entity gets a new handle.
+        "MaskBringTextToFront": true,
         "MaskLayer": "_MASK",
-        // 把"盖住文字的填充"送到绘制顺序最底层。遮罩跟着文字的绘制位置走，
-        // 填充如果画在文字之上（很多图就是这样，排序表里填充排在最后），
-        // 遮罩会被整块盖住——图上看着和"没加遮罩"一模一样，而数据里明明有。
+        // WIPEOUT on a non-plottable layer cannot mask plotted output.
+        "MaskLayerPlottable": true,
+        // Ordinary TEXT handles change when rebuilt; ATTRIB keeps its Insert ownership.
+        "MaskRebuildText": true,
+        // Shared block definitions affect every insert. Historical sample: 318 nested texts.
+        "MaskInsideBlocks": true,
+        // Move overlapping hatches behind text so they cannot cover the masks.
         "MaskSendHatchToBack": true,
-        // 标注文字：All=所有标注 / ExplicitOnly=只处理手工改过文字的 / Off=不处理
+        // All includes measurement text; ExplicitOnly restricts overrides; Off skips dimensions.
         "DimensionTextMode": "All",
-        // 标注没有原生遮罩（DIMTFILL 这个库版本写不进 DWG），只能把 Wipeout 塞进标注的
-        // *D 缓存块。代价：会随标注移动，但标注被编辑（块重生成）后遮罩会丢失；
-        // 块内文字实体的句柄也会变。不设这一项时标注会被整条跳过（记为"标注遮罩未启用"）。
-        "DimensionMaskMode": "BlockInternal"
+        // Native = DIMTFILL=1 style override (drawing background color) on each dimension.
+        // No new entities and it survives dimension regeneration. Legacy value BlockInternal
+        // is accepted and means the same thing.
+        // MaxMasksPerDrawing is omitted: unlimited; only an explicit positive value limits masks.
+        "DimensionMaskMode": "Native"
       }
     },
 

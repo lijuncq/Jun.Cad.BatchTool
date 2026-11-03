@@ -20,7 +20,7 @@ namespace Jun.Cad.Batch.Engine.Preflight
         /// <summary>通过。</summary>
         Passed,
 
-        /// <summary>失败，相关规则必须降级。</summary>
+        /// <summary>Probe failed; callers must report the failure, not assume a mask fallback.</summary>
         Failed,
 
         /// <summary>能力本身受限（例如标注遮罩只能静态），不是失败但必须告知。</summary>
@@ -64,17 +64,11 @@ namespace Jun.Cad.Batch.Engine.Preflight
     }
 
     /// <summary>
-    /// 能力探测：在真正改图之前，用**临时文档**把"这条链路到底能不能写出"验一遍。
+    /// 能力探测：在真正改图之前，用**临时文档**检查 Wipeout 的序列化和几何往返。
     ///
-    /// 为什么必须探测而不是查文档：
-    ///   * Wipeout 的写出链路在 3.8.35 上**实测可用**，但这是"本机 + 这个版本"的结论，
-    ///     换版本、换图纸模板都可能变；探测是唯一能给出当前答案的手段；
-    ///   * 探测失败必须能降级（Wipeout → 2D Solid），否则整条规则就不能跑；
-    ///   * 探测结果要能显示在界面上，而不是埋在日志里——用户在执行前就该知道
-    ///     "这次会用 Solid 遮罩"。
-    ///
-    /// 边界（必须写清楚）：探测通过只证明 **ACadSharp 自己能读回自己写的**，
-    /// 不证明 AutoCAD 认可。本项目不做宿主验证，所以结果里不能出现"已验证可用"这种话。
+    /// 当前项目引用本地修复版 ACadSharp：探测检查多边形顶点、裁剪开关、零影像引用和 WCS 包围盒。
+    /// 这可以捕获 API/序列化回归，但本身不代表出图渲染验证。AutoCAD 2025 Core Console
+    /// 已另行确认修复版输出被识别为 WIPEOUT；视觉遮罩效果仍应以宿主出图验收为准。
     /// </summary>
     public static class CapabilityProbe
     {
@@ -104,10 +98,8 @@ namespace Jun.Cad.Batch.Engine.Preflight
         // ------------------------------------------------------------------ Wipeout
 
         /// <summary>
-        /// Wipeout 写出链路：构造最小遮罩 → 写盘 → 回读 → 断言。
-        ///
-        /// 断言三项：实体还在、裁剪顶点还是 2 个、包围盒与写入值一致。
-        /// 任一失败都说明"这条链路在本机当前版本上不可靠"，调用方应降级 2D Solid。
+        /// Wipeout 写出链路：构造矩形掩膜 → 写盘 → 回读 → 检查剪裁几何和 WCS 包围盒。
+        /// 通过表示当前 ACadSharp writer round-trip 一致；宿主渲染仍以 AutoCAD 出图验收为准。
         /// </summary>
         public static ProbeResult WipeoutWriter()
         {
@@ -137,22 +129,7 @@ namespace Jun.Cad.Batch.Engine.Preflight
                     var doc = new CadDocument();
                     doc.Header.Version = ACadVersion.AC1032;
 
-                    var definition = new ImageDefinition("*JUN_PROBE_WIPEOUT")
-                    {
-                        Size = new XY(1, 1),
-                        DefaultSize = new XY(1, 1),
-                        FileName = string.Empty
-                    };
-                    doc.ImageDefinitions.Add(definition);
-
-                    var wipeout = new Wipeout
-                    {
-                        InsertPoint = new XYZ(0, 0, 0),
-                        Size = new XY(1, 1),
-                        Definition = definition
-                    };
-                    wipeout.ClipBoundaryVertices.Add(new XY(0, 0));
-                    wipeout.ClipBoundaryVertices.Add(new XY(100, 50));
+                    Wipeout wipeout = MaskService.CreateWipeout(new Bounds2d(0, 0, 100, 50));
                     doc.ModelSpace.Entities.Add(wipeout);
 
                     var notices = new List<string>();
@@ -182,24 +159,33 @@ namespace Jun.Cad.Batch.Engine.Preflight
                     }
 
                     Wipeout one = read[0];
-                    if (one.ClipBoundaryVertices.Count != 2)
+                    if (!one.ClippingState || one.ClipBoundaryVertices.Count != 4)
                     {
                         result.Status = ProbeStatus.Failed;
-                        result.Detail = string.Format("裁剪顶点丢失（回读 {0} 个，应为 2）", one.ClipBoundaryVertices.Count);
+                        result.Detail = string.Format("剪裁状态或多边形顶点错误（clipping={0}, vertices={1}; 应为开启、4 点）",
+                            one.ClippingState, one.ClipBoundaryVertices.Count);
+                        return Finish(result, watch);
+                    }
+
+                    if (one.Definition != null)
+                    {
+                        result.Status = ProbeStatus.Failed;
+                        result.Detail = "WIPEOUT 错误地关联了 IMAGEDEF；其影像定义句柄必须为 0";
                         return Finish(result, watch);
                     }
 
                     var bounds = TextBounds.ForWipeout(one);
-                    if (Math.Abs(bounds.Width - 100) > 1e-3 || Math.Abs(bounds.Height - 50) > 1e-3)
+                    if (Math.Abs(bounds.MinX) > 1e-3 || Math.Abs(bounds.MinY) > 1e-3
+                        || Math.Abs(bounds.Width - 100) > 1e-3 || Math.Abs(bounds.Height - 50) > 1e-3)
                     {
                         result.Status = ProbeStatus.Failed;
-                        result.Detail = string.Format("包围盒不一致：回读 {0}（应为 100×50）", bounds);
+                        result.Detail = string.Format("WCS 包围盒不一致：回读 {0}（应为 (0,0)-(100,50)）", bounds);
                         return Finish(result, watch);
                     }
 
                     result.Status = ProbeStatus.Passed;
                     result.Detail = notices.Count == 0
-                        ? "构造 → 写出 → 回读一致（裁剪 2 点，包围盒 100×50）"
+                        ? "DWG 往返一致（4 点多边形、clipping on、无 IMAGEDEF、WCS 包围盒 100×50）；宿主渲染另行验收"
                         : string.Format("回读一致，但写出时有 {0} 条告警", notices.Count);
                     return Finish(result, watch);
                 }
@@ -358,8 +344,9 @@ namespace Jun.Cad.Batch.Engine.Preflight
         // ------------------------------------------------------------------ Dimension
 
         /// <summary>
-        /// 标注文字遮罩：纯文件模式下**只能是静态**（没有反应器，标注一改就错位）。
-        /// 这不是失败，是能力边界——状态固定为"降级"，让 UI 直接显示出来。
+        /// Dimension masks are DIMTFILL=1 style overrides (DSTYLE XData): native, no new entities,
+        /// and they survive dimension regeneration. The remaining limitation is informational —
+        /// geometry drawn above the dimension can still cover the text background.
         /// </summary>
         public static ProbeResult DimensionMask()
         {
@@ -369,7 +356,7 @@ namespace Jun.Cad.Batch.Engine.Preflight
                 Title = "标注文字遮罩",
                 Status = ProbeStatus.Degraded,
                 Affects = "TextMask（DIMENSION）",
-                Detail = "纯文件模式无反应器：遮罩为静态，不随标注联动；标注被编辑后需重跑遮罩规则"
+                Detail = "DIMTFILL=1 样式覆盖（图形背景色），随标注重生成保留；但画在标注之上的几何仍会盖住文字背景"
             };
         }
 

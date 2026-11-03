@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Reflection;
 using System.Text;
 using Jun.Cad.Batch.Config;
@@ -337,8 +338,24 @@ namespace Jun.Cad.Batch.Editing
             if (Eq(type, "TextMask"))
             {
                 string maskMode = string.IsNullOrWhiteSpace(a.MaskMode) ? "Auto" : a.MaskMode.Trim();
+
+                if (Eq(maskMode, "Auto") || Eq(maskMode, "Wipeout"))
+                {
+                    maskMode += " (native)";
+                }
+
+                bool insideBlocks = ConfigValues.Bool(a.MaskInsideBlocks, true)
+                                    && (rule.Filter == null || ConfigValues.Bool(rule.Filter.IncludeNestedBlocks, true));
+                double paddingPercent = ConfigValues.Double(a.MaskPaddingRatio, 0.15) * 100;
+                string textBox = string.IsNullOrWhiteSpace(a.MaskTextBox) ? "Auto" : a.MaskTextBox.Trim();
+                bool bringToFront = ConfigValues.Bool(a.MaskBringTextToFront, true);
                 return "→ 文字遮罩 " + maskMode
-                       + (ConfigValues.Bool(a.MaskOnlyWhenOccluded, true) ? "（仅遮挡时）" : "（全部文字）")
+                       + (ConfigValues.Bool(a.MaskOnlyWhenOccluded, false) ? "（仅遮挡时）" : "（全部文字）")
+                       + (insideBlocks ? "（含块内）" : "（跳过块内）")
+                       + " 边界" + paddingPercent.ToString("0.###", CultureInfo.InvariantCulture) + "% × 字高"
+                       + " 图形背景色"
+                       + " 框" + textBox
+                       + (bringToFront ? " 文字前置" : "")
                        + " 层 " + (string.IsNullOrWhiteSpace(a.MaskLayer) ? "_MASK" : a.MaskLayer.Trim());
             }
 

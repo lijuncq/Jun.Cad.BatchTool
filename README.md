@@ -240,9 +240,9 @@ Jun.Cad.Batch.Cli run --config Jun.Cad.Batch.json --input 图纸.dwg --in-place
 
 ## 5. 配置契约
 
-**这一节的表格由 `Jun.Cad.Batch.Cli schema --markdown` 生成，不是手抄的。**
-字段标注（`RuleField`）是唯一真源：界面控件、schema 导出、这张表都读同一份标注，
-所以它们不会互相漂移。改了标注重新生成即可：
+These tables originate from `Jun.Cad.Batch.Cli schema --markdown`; `RuleField` metadata is the source for UI controls and schema export.
+The TextMask rows were synchronized with the metadata in this source-only update; schema export was not rerun because concurrent builds are excluded.
+After integration, regenerate the tables with:
 
 ```bash
 Jun.Cad.Batch.Cli schema --markdown > /tmp/fields.md
@@ -575,20 +575,33 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 
 | 参数 | 标签 | 类型 | 可选值 / 单位 | 说明 |
 |---|---|---|---|---|
-| `MaskMode` | 遮罩方式 | Enum | Auto=自动（优先 Wipeout）<br>Wipeout=仅 Wipeout<br>Solid=仅 2D Solid | 只影响 TEXT/ATTRIB 的新建遮罩；MTEXT 走原生背景遮罩。Auto：探测失败自动降级 Solid |
-| `MaskPaddingRatio` | 留白比例 | Double | × 字高 | 默认 0.15 |
-| `MaskPadding` | 留白（绝对） | Double | 图纸单位 |  |
-| `MaskOnlyWhenOccluded` | 仅在有遮挡时添加 | Toggle | — | 默认是：先判断文字矩形被压住多少，再决定加不加 |
-| `MaskSendHatchToBack` | 填充置后 | Toggle | — | 默认是：把盖住文字的填充送到绘制顺序最底层。**关掉时若填充画在文字之上，遮罩会被填充整块盖住、图上完全看不见**（数据里有，只是被压住） |
-| `MaskMinOccludedRatio` | 遮挡阈值 | Double | 0~1 | 文字矩形被压住的面积占比达到该值才算遮挡，默认 0.05 |
-| `MaskIgnoreBlockBounds` | 忽略块参照包络 | Toggle | — | 默认是（忽略）：块参照包络往往远大于实际图形，用它判遮挡会大面积误判 |
-| `MaskLayer` | 遮罩图层 | Text | — | 默认 _MASK；不存在时自动创建 |
-| `MaskSolidColorIndex` | Solid 颜色 | Integer | — | 默认 255（白/黑随背景）；只在降级为 Solid 时生效 |
-| `MaskLayerPlottable` | Solid 图层可打印 | Toggle | — | 默认否：Solid 是不透明实心，可打印会在图上留白块 |
-| `MaxMasksPerDrawing` | 单图遮罩上限 | Integer | — | 默认 2000，防止一张图被加上万个遮罩导致打开变慢 |
-| `MaskRebuildText` | 允许重建文字实体 | Toggle | — | 默认否：TEXT/ATTRIB 没有原生遮罩，新建遮罩只能排在文字之后；要放到下面必须重建文字（会改句柄） |
-| `DimensionMaskMode` | 标注遮罩模式 | Enum | Off=不处理<br>BlockInternal=放进 *D 块 | 默认不处理（标注会被整条跳过，记为"标注遮罩未启用"）；放进 *D 块会随标注移动，但标注重生成后会丢失，块内文字句柄也会变 |
-| `DimensionTextMode` | 标注文字范围 | Enum | ExplicitOnly=仅显式文字<br>All=全部（含测量值） | 默认仅显式覆盖；测量值文字位置依赖缓存块，可靠性更低。**注意它只决定"哪些标注"，不决定"扫不扫标注"**——那个由 `Filter.EntityTypes` 管，漏写 DIMENSION 时本字段完全不生效（会告警） |
+| `MaskMode` | 遮罩方式 | Enum | Auto=Native (default)<br>Wipeout=Native (compatibility) | Both values use native MTEXT background fill and WIPEOUT for TEXT/ATTRIB, including dimension caches. Drawing background color only; no RGB fill or 2D Solid fallback. `Solid` and other invalid strings are validation errors. |
+| `MaskPaddingRatio` | 遮罩边界偏移比例 | Double (nullable) | × 字高 | Default `0.15 = 15%`. Per-side padding = the text's own character height × ratio, **not bounding-box height**. MTEXT native factor = `1 + ratio = 1.15`, stored in the file (DXF 45). Valid range `0..2`, inclusive; NaN and Infinity are errors. |
+| `MaskTextBox` | 遮罩框模式 | Enum | Auto=默认<br>Native<br>Tight | AutoCAD fills the native MTEXT background across the **whole text frame** (DXF 41) — a controlled plot with a 60-unit frame and 6 units of text erased exactly 60 units, leaving blank mask on one side. `Auto` (default) keeps the native background when the frame fits the text and switches to a **tight WIPEOUT** sized from estimated text extents when the frame is visibly looser. `Native` always uses the native background; `Tight` always uses a WIPEOUT. `RectangleWidth` is never changed, so text never reflows. Unknown values are validation errors. |
+| `MaskBringTextToFront` | 文字前置 | Toggle | — | Default `true`: masked text and its mask are moved to the **top of the draw order** (container entity-collection order), so later-drawn lines and hatches cannot cross the mask. Dimensions are moved too. The moved entity receives a **new handle**. Implemented via entity-collection reordering — not SORTENTS, because ACadSharp cannot yet write a sortents table that AutoCAD reads (see known limitations). |
+| `MaskOnlyWhenOccluded` | 仅在有遮挡时添加 | Toggle | — | Default `false`: mask all supported text matching the filter, without requiring occlusion. |
+| `MaskSendHatchToBack` | 填充置后 | Toggle | — | Default `true`. **Effectively superseded by `MaskBringTextToFront`**: it works through the SORTENTS table, which AutoCAD currently cannot read back from ACadSharp-written files (verified 2026-11-02 — `dictsearch` returns nil). Kept for configuration compatibility; draw order is now guaranteed by fronting the text instead. |
+| `MaskMinOccludedRatio` | 遮挡阈值 | Double | 0~1 | Default `0.05`; used only when `MaskOnlyWhenOccluded=true`. |
+| `MaskIgnoreBlockBounds` | 忽略块参照包络 | Toggle | — | Default `true`: ignore overly broad Insert bounds during occlusion checks. Only affects occlusion-only mode; overlapping an Insert alone may then be classified as unoccluded. |
+| `MaskInsideBlocks` | 块内文字也加遮罩 | Toggle | — | Default `true`. Edits shared block definitions, affecting every insert. `Filter.IncludeNestedBlocks=false` still disables traversal. Anonymous dynamic blocks are not supported. |
+| `MaskLayer` | 遮罩图层 | Text | — | Default `_MASK`, created when needed for WIPEOUT. MTEXT native background stays on the text's layer. |
+| `MaskLayerPlottable` | 遮罩图层可打印 | Toggle | — | Default `true`. WIPEOUT on a non-plottable layer cannot mask plotted output; this is not an RGB fill setting. |
+| `MaxMasksPerDrawing` | 单图遮罩上限 | Integer | — | Default unlimited. Only an explicitly positive value imposes a limit; omitted, zero, and negative values are unlimited. |
+| `MaskRebuildText` | 允许重建文字实体 | Toggle | — | Default `true`. Rebuilding ordinary TEXT changes its handle. ATTRIB remains owned by its Insert. MTEXT keeps its native background when the text frame fits the text; with a loose frame (tight mask) or with `MaskBringTextToFront` the MTEXT handle changes too. |
+| `DimensionMaskMode` | 标注遮罩模式 | Enum | Off=不处理<br>Native=标注背景填充（默认） | Default `Native`: writes a `DIMTFILL=1` (drawing background color) style override on each matched dimension. No new entity, no handle change, survives dimension regeneration. Legacy `BlockInternal` is accepted and means the same thing. `Off` skips dimension text entirely. |
+| `DimensionTextMode` | 标注文字范围 | Enum | Off=不处理<br>ExplicitOnly=仅显式文字<br>All=全部（含测量值） | Default `All`, including measurement text. This selects which dimension text to process; `Filter.EntityTypes` can still exclude DIMENSION and trigger a warning. |
+
+**Current defaults (2026-11-02, this update).** Enabling TextMask processes supported text across the model and all layouts, including ordinary block definitions, with 15% character-height padding and drawing-background masks. The root `Jun.Cad.Batch.json` example remains **`Enabled: false`**; `samples/text-mask.json` remains an enabled opt-in example. Neither restricts `EntityTypes`. Supported paths include TEXT, MTEXT, ATTDEF, ATTRIB, and DIMENSION text (a `DIMTFILL=1` style override); **tables, multileaders, and dynamic anonymous-block text are not covered**. Existing scope, layer, nesting, and other filters still apply.
+
+**Retired fields and migration.** `MaskSolidColorIndex` and absolute `MaskPadding` are no longer `RuleAction` properties or UI controls. Old keys survive load/edit/save in `Action.Extra`, just like other unknown fields; `ConfigLoader` is unchanged. `MaskSolidColorIndex` warns that it is deprecated and ignored. A nonzero or invalid `MaskPadding` is an error: remove it and use `MaskPaddingRatio`; zero or null is ignored. Validation does not silently discard or migrate the old data.
+
+**Background versus frame color.** WIPEOUT naturally masks to the drawing background; it has no selectable RGB fill. Existing true-color white is retained only as a **frame workaround on white-paper plots**, not as mask fill. Historical AutoCAD 2025 checks found that writing `ACAD_WIPEOUT_VARS=0` still reopened with `WIPEOUTFRAME=1`; this upstream limitation is not fixed by removing Solid.
+
+**Dimension text masks.** Dimensions carry no MTEXT entity to give a background to; the rule writes a `DIMTFILL=1` (drawing background color) dimension-style override as DSTYLE XData on the dimension itself. Because it is a real style override rather than an edit to the generated `*D` cache block, it survives dimension regeneration, adds no entity, and changes no handle. The override is appended, so existing per-dimension overrides are preserved. Geometry drawn *above* the dimension in draw order can still cover the text background — that is what `MaskBringTextToFront` (default on) fixes by moving the dimension to the top draw order. The retired `*D` cache-block path (`BlockInternal`) created WIPEOUTs inside a cache that AutoCAD rebuilds, so those masks were discarded on regeneration.
+
+**MTEXT flag encoding (2026-11-02 fix).** The background flags must be written as **both** bits: bit0 (background fill on — this is what makes AutoCAD's properties palette show 背景遮罩=是) **and** bit1 (fill color source = drawing window color), i.e. DXF `90=3`, together with `63` and `45`. An earlier build wrote only bit1 (`90=2`, no `45`/`63`); per the DXF/ODA rule that 45/90/63 travel as a set, AutoCAD treated that as **no mask** — the palette showed 否 and nothing was filled. A controlled plot (line behind text) confirmed it: `90=2` left the line intact, `90=3` erased it with the window color, and `90=1` with an explicit ACI 7 fill plotted a solid black box under `monochrome.ctb` (why an explicit color is not an option). Files processed by the earlier build are upgraded automatically on the next run: the rule only treats bit0 as "already masked" and tops up the missing bit.
+
+**Historical behavior, not current options.** Earlier versions offered `MaskMode=Solid` and Auto-to-Solid fallback, defaulted to occlusion-only masking, disabled text reconstruction and dimension-cache masking, used `ExplicitOnly`, and capped masks at 2000. The retired Solid color default was ACI 255, later written as RGB white after `monochrome.ctb` rendered ACI white as black; other ACI colors remained subject to CTB remapping. Those findings are preserved as history, not a reason to restore a Solid/RGB fill option.
 
 #### `TextReplace`
 
@@ -638,7 +651,7 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 | `DimensionStyleChange` | 改属性 | 改标注样式，可自动克隆 Standard | 可用 | |
 | `LayoutRename` | 改属性 | 布局改名，可选同步图框属性 | 可用 | `Layout.Name` 往返已实测 |
 | `HatchPatternChange` | 改属性 | 换图案/比例/角度/纯色/渐变 | 可用 | 默认保持线距；目标图案与原图案结构相同时自动对齐方向（见 docs/library-notes.md） |
-| `TextMask` | 增删实体 | 给文字加遮罩 | 降级 | MTEXT 走原生背景；TEXT/ATTRIB 需开关重建 |
+| `TextMask` | Attribute edits / entity creation | Native drawing-background masks | Available with limits | All supported text by default, including ordinary blocks; 15% character-height padding. MTEXT uses native background without changing `RectangleWidth`; TEXT/ATTRIB use WIPEOUT. Reconstruction defaults on (ordinary TEXT handles change; ATTRIB ownership remains). Dimensions default to `Native`: a `DIMTFILL=1` style override that survives regeneration. No Solid fallback; tables, multileaders, and dynamic anonymous-block text are unsupported. |
 | `GeometryCleanup` | 增删实体 | 清理零长线/空文字/重复实体 | 可用 | **默认只预演** |
 | `PurgeUnused` | 增删实体 | 清理未使用的块定义/图层/线型/样式 | 可用 | 自研引用扫描 |
 | `DimTextAudit` | 只读检查 | 标注文字 vs 测量值 | 可用 | 只报告 |
@@ -752,10 +765,13 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 | 多重引线 / 形位公差文字 | 不支持 | 库未建模可写入口 | — |
 | 文字包围盒 | 降级 | `TEXT/MTEXT.GetBoundingBox()` 返回退化点 | 自建估算（字高 × 字符数） |
 | 标注包围盒 | 降级 | `Dimension.GetBoundingBox()` 零宽 | 取 `*D` 块内实体并集 |
-| 标注文字遮罩联动 | 不支持 | 无反应器 | 只能静态；`DimensionMaskMode=BlockInternal` 可放进 `*D` 块 |
-| 文字遮罩（MTEXT） | 可用 | 原生背景遮罩，不新增实体 | `BackgroundScale` 回读恒为 1.5 |
-| 文字遮罩（TEXT/ATTRIB） | 降级 | 新实体只能追加在末尾 | `MaskRebuildText=true` 重建文字（换句柄） |
-| Wipeout 写出 | 可用 | 探测通过才用 | `preflight` 探测；失败降级 2D Solid |
+| Dimension text masks | Available with limits | `DIMTFILL=1` style override (DXF 69) written per dimension through DSTYLE XData | `DimensionTextMode=All` (default) and `DimensionMaskMode=Native` (default). Drawing-background fill, no new entity, no handle change, survives regeneration. Geometry drawn above the dimension can still cover the text background; use `MaskSendHatchToBack` for overlapping hatches. **Host evidence (AutoCAD 2025):** a product-written dimension read back as `(-3 ("ACAD" (1000 . "DSTYLE") (1002 . "{") (1070 . 140) (1040 . 3.5) (1070 . 69) (1070 . 1) (1002 . "}")))`, and a controlled 1600×1280 plot showed the crossing line broken by the text at y=358 (`0-793`, text pixels 794–806, `807-1599`) while an unmasked control dimension in the same image was continuous at y=342 (`0-1599`). |
+| MTEXT masks | Available | Native drawing-background fill or tight WIPEOUT | Set native background flags **as `90=3` (bit0 fill-on + bit1 drawing-window color) with `63` and `45`** and factor `1 + MaskPaddingRatio` (default `1.15`), **without changing `RectangleWidth`/`RectangleHeight`**. The native fill covers the whole text frame; when the frame is wider than the text, `MaskTextBox=Auto` (default) switches to a tight WIPEOUT instead (controlled plot: 60-unit frame / 6-unit text erased exactly 60 units natively, ~15 units tight). Bit1-only (`90=2`) is rejected by AutoCAD as "no mask"; an explicit fill color (`90=1`) plots as a solid black box under `monochrome.ctb`. No Solid alternative is offered. |
+| TEXT/ATTRIB masks | Available | Native WIPEOUT for both Auto and Wipeout modes | Drawing-background masking, not a colored solid fill. `MaskRebuildText=true` by default: ordinary TEXT receives a new handle; ATTRIB ownership remains attached to its Insert. Duplicate WIPEOUTs at the same position (repeat runs) are now detected and skipped. White entity color is only the existing frame workaround. |
+| Text draw order (fronting) | Available with limits | Entity-collection reordering, `MaskBringTextToFront=true` by default | Masked text + mask (or the whole dimension) move to the end of their container's entity list = top draw order; controlled plot verified a line drawn after the text no longer crosses the mask. Implemented with a placeholder-entity trick because the entity collection is a HashSet (plain remove+add reuses the freed slot and moves nothing). Entities that move get **new handles**. Not implemented via SORTENTS: ACadSharp-written sortents tables are invisible to AutoCAD (block-record extension dictionary is dropped on DWG write — verified via `dictsearch` 2026-11-02), and even AutoCAD's own tables are lost in an ACadSharp round-trip. Consequence: **existing draw order stored in SORTENTS is not preserved by this pipeline**; visual order falls back to entity-creation order. |
+| Ordinary block-definition text masks | Limited | Shared definitions affect every insert | `MaskInsideBlocks=true` by default, subject to traversal filters. Historical sample 30250-001 contained 318 nested texts; this is not a current coverage count. |
+| Table / multileader / dynamic anonymous-block text masks | Unsupported | No supported TextMask path | Unrestricted EntityTypes means all **supported** text, not every specialized text-bearing object. |
+| WIPEOUT serialization | Fixed previously; frame limitation remains | Four-point polygon clipping, clipping on, Size=1×1, U/V along mask edges, zero IMAGEDEF/REACTOR handles. White entity color is a frame workaround, not the background fill. | **Historical evidence (before this defaults update):** Core Console found one WIPEOUT, DXF `71=2/91=5/280=1/340=0/360=0`; a 1600×1280 controlled plot had no line pixels inside x 399–1199, with the line ending/resuming at the boundary. DXF/DWG round-trip 2/2 passed then, not in this round. AutoCAD still read `WIPEOUTFRAME=1` after `ACAD_WIPEOUT_VARS` group 70 was written as 0; white frames disappear only on white-paper plots. |
 | 布局改名 | 可用 | `Layout.Name` 往返已实测 | — |
 | 未建模对象写回 | 未验证 | 读不出的对象只进 `ReadNotices` | 建议先在副本上试 |
 | 文件级并行 | 不做 | 无规模数据 | — |
@@ -764,7 +780,7 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 
 ## 9. 安全与默认值
 
-默认值一律取"不会破坏东西"的那一侧。
+File-output defaults protect the source drawing. TextMask is an explicit exception at the rule level: once enabled, it targets all supported text and allows reconstruction by default. Ordinary TEXT handles can change, and shared block definitions affect every insert. Preview on copies before applying the rule.
 
 ### 9.1 不覆盖源文件
 
@@ -806,15 +822,17 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 
 > 这是验证手段，不是运行时依赖：工具本身不启动任何 AutoCAD 进程。
 
-### 10.2 关键结果
+### 10.2 Historical validation results
+
+The following records describe earlier implementation and verification stages, including earlier Solid and WIPEOUT behavior. They are retained as history, **not acceptance results for this defaults update**. A row saying rendering was still pending describes that earlier stage; the later controlled-plot evidence is recorded in section 8. See 10.3 for what this round actually ran.
 
 | 场景 | 样本 | 结果 |
 |---|---|---|
 | 换填充图案 | 2.5 MB 图纸，160 个填充 | AUDIT 0 错误；223 行清单里恰好 6 行不同 |
 | 保持线距 | 同上 | 图案名变了，`45/46` 组码与源文件一致（`41` 由 1.0 改 0.384615） |
 | 文字替换 | 442 实体 / 90 MTEXT | 匹配 299 = 改动 2 + 跳过 297；格式码一个没动 |
-| 文字遮罩 | 同上 | 匹配 299 = 改动 71 + 跳过 228（块内实体 209 / 无遮挡 19） |
-| 标注遮罩 | 84 个标注 | 81 个 `*D` 块内写入 Wipeout，位于文字之前 |
+| 文字遮罩 | 同上 | 原验证为匹配 299 = 改动 71 + 跳过 228；**2026-11-02 后续修复**：块内文字按 `MaskInsideBlocks` 写进共享块定义；实体遮罩默认用修复版 ACadSharp Wipeout。旧计数对应 Solid 版本，不代表当前实现 |
+| 标注遮罩 | 84 个标注 | 旧版曾报告 81 个 `*D` 块内 Wipeout。**2026-11-02 后续修复**：`*D` 缓存块方案退役（重生成即丢），改为给每个标注写 `DIMTFILL=1` 样式覆盖。30250-002 实测：带覆盖的标注 0 → 30，覆盖键总数 750 → 780（每个标注只加 69 一项，原有键保留） |
 | 区域过滤 | 竖带 3000,11000-4000,12000 | CenterInside 0 / Intersects 3 / FullyInside 0 |
 | 审计 | 2 个图框 × 4 Tag | 检查 6 项，缺 SCALE 2 项 |
 | 清理 | 8 实体（含 2 零长线 + 2 空文字） | 匹配 8 = 改动 4 + 跳过 4，写出后剩 4 |
@@ -825,14 +843,34 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 | `$MEASUREMENT` 修正 | 同一份输出图 | 只在图案名是"仅公制库有"时才改成 1；`ANSI37` 场景保持 `$MEASUREMENT=0` 不动 |
 | 双线缝宽 | `2_SECONDARY_ESCAPE_ROUTE` → `JIS_LC_8A` | 线距 3 → 3（不变）、比例 1 → 0.384615（反算）、缝宽 0.5 → 0.272（提示一次） |
 | 打印样式模式 | `accoreconsole` 读 `(getvar "PSTYLEMODE")` | 源图 1；修复前输出 **0**（CTB 图被当成 STB，打印样式表选不到）；修复后 **1**；STB 样本 0 → 0 不误伤 |
-| 标注文字遮罩 | `TextMask` + `EntityTypes:["MTEXT"]` + `DimensionTextMode:All` | 匹配数 218 = 只有 MTEXT，**20 个 DIMENSION 从未被扫描**；改为不写 EntityTypes 后匹配 238，`BlockInternal` 在 20 个 `*D` 块里各生成 1 个 Wipeout |
+| 标注文字遮罩 | `TextMask` + `EntityTypes:["MTEXT"]` + `DimensionTextMode:All` | 匹配数 218 = 只有 MTEXT，20 个 DIMENSION 未扫描；不写 `EntityTypes` 后匹配 238。旧版 `*D` 块内 Wipeout 编码无效且重生成即丢；当前规则写 `DIMTFILL=1` 样式覆盖，已在 AutoCAD 2025 回读与受控出图中验证 |
 | 遮罩被填充盖住 | 30250-001，`SortEntitiesTable` 5572 条 | 源图排序表末尾是 `Hatch:21540/21541` = 填充画在最上层；遮罩在标注 `*D` 块里，随块一起被填充盖住。加 `MaskSendHatchToBack` 后输出表头变成 `Hatch:C19B…`，62 个填充被置后 |
 | 关掉保持线距 | 同图，`MatchSpacing=false` | 截图实测组对间距 33.5px/455 → 67px/348（归一化 **2.62×**），与 `7.8 ÷ 3 = 2.6` 吻合；日志告警"3 → 7.8（2.6 倍）" |
 | 关掉保持线距时"沿用原比例" | 源比例 75、线距 225 | 修前 `41=75` 但图案线 7.8（实际密 29 倍）；修后 `41=75`、图案线 585，两者一致 |
+| ~~MTEXT 遮罩背景不显示（旋转 90° 文字）~~ | 30250-002 | **结论已被推翻（2026-11-02）**。当时判断"41=0 → 背景画不出来"，据此补 `RectangleWidth`；复核实测表明补 41 会让 AutoCAD **按新宽度重新折行**（一行变两行），而"41=0 到底画不画得出背景"在无头出图里既没证真也没证伪。补宽度的逻辑已移除 |
+| 遮罩到底有没有生效（对照实验） | 受控测试图 + `accoreconsole` 出图 | 修复版 DWG 在 AutoCAD 2025 中可检索为 1 个 WIPEOUT；回读组码 `71=2/91=5/280=1/340=0/360=0`。文字下横线是否实际切断还需完成渲染对照，不能仅凭实体存在判定通过 |
+| 块内文字覆盖率 | 30250-001 | 块定义内文字 **318 个 / 72 个定义**，旧实现全部跳过（`Depth>0` 不看配置） |
 
 逐条命令与输出见 `docs/review/`。
 
-### 10.3 审查
+### 10.3 This round's verification (2026-11-02)
+
+What this defaults update actually executed, on real drawings:
+
+| 检查 | 样本 | 结果 |
+|---|---|---|
+| 编译 | `Jun.Cad.Batch.Core` + 测试项目 | 0 warning / 0 error |
+| 单元测试 | `dotnet test`，`JUN_CAD_SAMPLE_DWG` 指向真实海工图 | **291 passed / 0 skipped / 0 failed** |
+| 端到端 CLI | 30250-002 | 共为 **195 处**文字加了遮罩（MTEXT 原生背景 175 / 标注文字 15 / Wipeout 5 / 填充置后 6）；匹配 195 = 改动 195 + 跳过 0，失败 0 |
+| 结构扫描（回读输出图） | 同上 | `mtext: 347 total, 175 with drawing-window mask, 0 with RectangleWidth>0`；`wipeout: 5, solid: 0`；`bad wipeout: 0` |
+| 标注覆盖扫描 | 同上 | `dimensions: 30, with style override: 30, with DIMTFILL=1: 30`（源图为 0）；`*D` 缓存块内 Wipeout 0；覆盖键总数 750 → 780（每个标注只加一项） |
+| 宿主回读 | AutoCAD 2025 `accoreconsole` + LISP `entget` | 回读到 `(-3 ("ACAD" (1000 . "DSTYLE") (1002 . "{") (1070 . 140) (1040 . 3.5) (1070 . 69) (1070 . 1) (1002 . "}")))` |
+| 宿主出图（受控对照） | 自建测试图，`-PLOT` → PNG，`monochrome.ctb` | 同一张图里两条横贯线：加了 `DIMTFILL=1` 的那条在 y=358 被文字切断（`0-793` → 文字像素 794–806 → `807-1599`）；未加覆盖的对照标注在 y=342 连续 `0-1599` |
+| MTEXT 背景标志取值（90 组码对照实验） | 4 个 MTEXT（90=0/2/3/1）压在同一条横线上，`-PLOT` → PNG 逐像素 | `90=2`（只有 bit1、无 45/63）：**无填充、横线穿过**——旧实现的 bug；`90=3`（bit0+bit1+63+45）：**窗口底色填充、横线擦断**；`90=1`（显式 ACI 7）：整块黑盒（CTB 重映射，弃用路径）；`90=0`：对照。同轮 AutoCAD 回读修复后的真实图纸：`(90 . 3) (63 . 7) (45 . 1.15)` 成套出现 |
+
+**未验证 / 已知限制**：~~MTEXT 的偏移因子在宿主侧是"尽力而为"~~ **该限制已消除（2026-11-02 晚）**：因子丢失的真正原因是旧实现只写 bit1（90=2、无 45/63 成套组码），AutoCAD 按"无遮罩"处理。改为 bit0+bit1（90=3 + 63 + 45）后，AutoCAD 2025 回读 `(90 . 3) (63 . 7) (45 . 1.15)`，因子随文件保存，出图擦除有效。旧输出文件重跑一次即可补齐。
+
+### 10.4 审查
 
 五阶段文档+实现审查（Zoom Out / Comprehension / Critic / Intermediate / Implementation Readiness）
 的发现与修复状态见 `docs/review/consolidated_review_report.md` 与 `goldfish_review_report.md`。
@@ -876,9 +914,10 @@ Jun.Cad.Batch.Cli schema --out schema.json      # 机器可读版，给 CI / 编
 
 ### 11.3 前置检查
 
-把能力探测的结果摆出来，而不是只写日志：Wipeout 写出、表格单元格、标注遮罩。
-其中**只有 Wipeout 一项会改变执行行为**（失败则遮罩降级为 2D Solid），
-另外两项是信息展示——它们不会阻断执行。
+Preflight displays WIPEOUT serialization, table-cell, and dimension-mask capabilities instead of hiding them in logs.
+`Auto` and `Wipeout` both select native masks; unavailable native masking must report failure rather than create a 2D Solid. MTEXT uses its own native background path. The table and dimension results are informational, not a guarantee that every specialized text object is supported.
+The existing probe logic is unchanged in this update. It checks round-trip serialization and geometry, **not host rendering acceptance**. Its dimension wording now describes the `DIMTFILL=1` style override: it survives regeneration, and geometry drawn above the dimension can still cover the text background.
+Historical Core Console controlled-plot checks from 2026-11-02 are recorded in section 8 and `textmask-failure-report.md` section 8.1; that historical report is unchanged.
 
 ### 11.4 规则编辑
 
@@ -959,7 +998,7 @@ Jun.Cad.Batch/
 │  ├─ Jun.Cad.Batch.Cli/        命令行
 │  └─ Jun.Cad.Batch.Win/        WinForms 界面
 ├─ tests/
-│  └─ Jun.Cad.Batch.Tests/      xUnit：纯逻辑 + 真实图集成（131 例）
+│  └─ Jun.Cad.Batch.Tests/      xUnit: logic + drawing integration (historically 210 cases; not this round)
 └─ out-sample/                  验证输出（可删）
 ```
 
@@ -984,7 +1023,9 @@ Jun.Cad.Batch/
 dotnet test tests/Jun.Cad.Batch.Tests/Jun.Cad.Batch.Tests.csproj
 ```
 
-141 个用例，8 秒，全部不启动 AutoCAD。
+Historical baseline: 210 cases completed in 8 seconds without starting AutoCAD. Those numbers are retained as a prior result, **not the count or timing for this update**.
+
+This round adds source-level regression cases for native-only mode validation, retired-field preservation/migration, finite padding ratios, unlimited-limit inputs, template defaults, UI metadata, and summaries. **This round was run:** `dotnet test` with `JUN_CAD_SAMPLE_DWG` pointed at a real drawing completed **291 tests, 0 skipped, 0 failed**. Host-rendering verification is covered by the controlled-plot evidence in section 8, not by the unit suite.
 
 | 文件 | 覆盖什么 |
 |---|---|
@@ -998,6 +1039,7 @@ dotnet test tests/Jun.Cad.Batch.Tests/Jun.Cad.Batch.Tests.csproj
 | `ConfigLoaderTests` | 命令行提示的形状（`规则「名」原因`）、未注册类型、未知字段保留 |
 | `DrawingFolderTests` | 按文件夹收集：递归、排除输出根 / `.jun-runs` / 旧输出根、多通配符去重 |
 | `DwgSampleTests` | 真实海工图：读入、写出回读、规则端到端、预览与执行统计一致、只读规则不改图 |
+| `TextMaskRuleTests` | 原生遮罩：MTEXT 图形背景色标志与 `1+ratio` 偏移因子、`RectangleWidth` 不动、绝不产生 Solid、字高比例几何（10 高 ⇒ ±1.5）、默认全部遮罩 / 仅遮挡时跳过、上限语义、块定义内 TEXT/MTEXT/常量 ATTDEF、属性仍归属 Insert、Wipeout 像素编码与帧变量、标注 `DIMTFILL=1` 覆盖（已有则跳过、追加不清空） |
 
 ### 14.1 样图
 

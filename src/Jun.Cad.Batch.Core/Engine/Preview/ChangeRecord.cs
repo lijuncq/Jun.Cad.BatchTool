@@ -20,10 +20,10 @@ namespace Jun.Cad.Batch.Engine.Preview
     /// <summary>
     /// 差异预览的一行：文件 / 空间 / 句柄 / 类型 / 操作 / 旧值→新值 / 状态。
     ///
-    /// 设计原则：**降级必须显式**。凡是"本来想用 A，实际用了 B"的地方
-    /// （Wipeout 探测失败改 Solid、标注遮罩是静态的、表格单元格跳过了），
-    /// 都要把 <see cref="Degraded"/> 置真并在 <see cref="Note"/> 里写清楚，
-    /// 不允许静默降级——用户看到的预览必须等于实际会发生的事。
+    /// Degradation must be explicit: static dimension-cache masks and skipped table cells
+    /// set <see cref="Degraded"/> and explain the limitation in <see cref="Note"/>.
+    /// Native mask failures are blocked, never replaced with a solid-color mask.
+    /// Preview must describe what execution will actually do.
     /// </summary>
     public sealed class ChangeRecord
     {
@@ -56,7 +56,7 @@ namespace Jun.Cad.Batch.Engine.Preview
 
         public string Note { get; set; }
 
-        /// <summary>是否发生了降级（遮罩改 Solid、静态标注遮罩、表格跳过 …）。</summary>
+        /// <summary>Whether capability is limited (static dimension-cache masks, skipped table cells, etc.).</summary>
         public bool Degraded { get; set; }
 
         public string StatusText
