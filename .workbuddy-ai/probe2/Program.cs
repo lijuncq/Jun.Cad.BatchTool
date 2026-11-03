@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -48,6 +48,90 @@ namespace Probe
             if (args.Length > 1 && args[0] == "textscan")
             {
                 TextScan.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "maskdiag")
+            {
+                MaskDiag.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "rotmask")
+            {
+                RotMask.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 0 && args[0] == "enumvals")
+            {
+                EnumVals.Dump();
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "fixverify")
+            {
+                FixVerify.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "rect")
+            {
+                RectProbe.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "final")
+            {
+                FinalCheck.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "bgflag")
+            {
+                BgFlag.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "bgfix")
+            {
+                BgFix.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 2 && args[0] == "classes")
+            {
+                Classes.Run(args[1], args[2]);
+                return;
+            }
+
+            if (args.Length > 2 && args[0] == "todxf")
+            {
+                ToDxf.Run(args[1], args[2]);
+                return;
+            }
+
+            if (args.Length > 3 && args[0] == "setwframe")
+            {
+                SetWFrame.Run(args[1], args[2], args[3]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "dict")
+            {
+                DictDump.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "bgbox")
+            {
+                BgBox.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "rotsource")
+            {
+                RotSource.Run(args[1]);
                 return;
             }
 

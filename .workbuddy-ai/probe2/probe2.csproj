@@ -7,8 +7,11 @@
     <AssemblyName>probe2</AssemblyName>
     <RootNamespace>Probe</RootNamespace>
   </PropertyGroup>
+  <!--
+    ACadSharp 不再单独引 NuGet 包：Core 已经 ProjectReference 到本地修复版源码，
+    两边同时引会撞同一个程序集标识，编译器会把两份都丢掉（CS0246）。
+  -->
   <ItemGroup>
-    <PackageReference Include="ACadSharp" Version="3.8.35" />
   </ItemGroup>
   <!-- 有些探针要复用 Core 的 TextBounds/Bounds2d，保证和产品代码走同一套算法 -->
   <ItemGroup>
