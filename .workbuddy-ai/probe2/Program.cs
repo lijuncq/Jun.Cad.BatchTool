@@ -57,6 +57,48 @@ namespace Probe
                 return;
             }
 
+            if (args.Length > 1 && args[0] == "miss")
+            {
+                Miss.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 2 && args[0] == "wipe")
+            {
+                Miss.Wipe(args[1], args.Skip(2).ToArray());
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "mdups")
+            {
+                MaskDump.Dups(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "fonts")
+            {
+                Fonts.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "measurefonts")
+            {
+                MeasureFonts.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "boxwidth")
+            {
+                BoxWidth.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "mdump")
+            {
+                MaskDump.Run(args[1], args.Length > 2 ? args[2] : null);
+                return;
+            }
+
             if (args.Length > 1 && args[0] == "rotmask")
             {
                 RotMask.Run(args[1]);
@@ -210,6 +252,18 @@ namespace Probe
             if (args.Length > 1 && args[0] == "dims")
             {
                 Dims.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "maskverify")
+            {
+                MaskVerify.Run(args[1]);
+                return;
+            }
+
+            if (args.Length > 1 && args[0] == "cal")
+            {
+                Cal.Run(args[1]);
                 return;
             }
 

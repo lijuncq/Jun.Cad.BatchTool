@@ -7,6 +7,11 @@
 
 ---
 
+> **测试基线（唯一准绳）**：默认 `317 total / 311 passed / 6 skipped / 0 failed`；设置
+> `JUN_CAD_SAMPLE_DWG=tmpv/sampledwg` 后 `317 total / 317 passed / 0 skipped / 0 failed`
+> （2026-11-05 实跑；修复前为 301 / 296 / 5）。正文出现的 212 / 215 / 291 / 301 / 316 均为历史轮次记录，
+> 不代表当前状态；逐条命令、宿主门禁实测与签发范围见 `VERIFY.md`。
+
 ## 0. 一句话结论
 
 **遮罩"加上了"但根本不存在。** 工具写出的 `WIPEOUT` 在 AutoCAD 里不擦除任何东西——数据里有实体、句柄、图层，视觉上完全无效。MTEXT 走的是另一条路（原生背景），它没有失效，但它把 `RectangleWidth` 写死成估算宽度，**把文字重新排版了**（一行变两行）。此外块内文字从未进入流程，标注 22 个只处理了 1 个。
@@ -186,6 +191,8 @@ ClassVersion= 1
 
 ### 3.4 遮挡判定：改成"有几何相交"，并纳入块参照与块内几何
 
+> **状态：本节方案未实施**（2026-11-05 复核）。当前实现仍是面积比 + 0.25 权重 + 排除 Insert；默认把 `MaskOnlyWhenOccluded` 关掉以绕过，不是修复。
+
 1. 把 `Insert` 纳入遮挡源。两种粒度：
    - 粗：用块参照的包围盒（`MaskIgnoreBlockBounds=false`），实现简单，误判多；
    - 细：把块定义内的几何按插入变换展开到世界坐标再判定。30250-001 的 98 个 `Insert` 有 23 个包围盒取不到（库返回 NaN），粗粒度会漏，建议做细粒度但加缓存（同一块定义 + 同一变换只算一次）。
@@ -225,15 +232,23 @@ ClassVersion= 1
 
 现有的 `CapabilityProbe.WipeoutWriter` 要跟着改：只验证"能写能读"是不够的，**必须验证 AutoCAD 认不认**（例如写一个测试图，用 accoreconsole 读回 `(ssget "_X" '((0 . "WIPEOUT")))` 的计数）。
 
+> 本节 5 条验收的可执行命令与断言见仓库根 `VERIFY.md`；其中宿主渲染项需 AutoCAD 会话，库层往返不构成验收。
+> **2026-11-05 补记**：`VERIFY.md` 的第 2–5 项已在 AutoCAD 2025 Core Console 上实跑（受控图
+> `tmpv/hostverify-2026-11-05/`）；`ssget` 计数 / MTEXT 与 DIMENSION 组码 / `-PLOT` 逐像素差分均通过，
+> `WIPEOUTFRAME` 仍为已知未修复项。第 5 条「排序表可查」的验收口径已废弃——`SORTENTS` 写不出去
+> （见 §9.7 与 `VERIFY.md` 的 C01），当前靠实体集合顺序实现文字前置。
+
 ---
 
 ## 5. 已实施的修复（2026-11-02）
+
+> **状态：本节（§5）与 §8 为历史实施记录，已作废。** 当前唯一有效实现见 §9.2 / §9.6 / §9.7：只有原生遮罩一条路（MTEXT 背景 90=3、TEXT/ATTRIB 的 Wipeout、标注 DIMTFILL=1），没有 2D Solid 兜底，也没有 `MaskMode=Wipeout` 抛异常的行为。本节提到的 `WipeoutWriteSupported`、`MaskSolidColor`、`CreateSolid` 在当前源码中均不存在。
 
 按"先修阻断级两项"执行，改动如下。
 
 ### 5.1 停止改写 MTEXT 的 `RectangleWidth`（`Engine/Mask/MaskService.cs`）
 
-`ApplyMTextBackground(mtext, paddingRatio)` → `ApplyMTextBackground(mtext)`：删掉补宽度/补高度的两段，只置 `BackgroundFillFlags`。
+`ApplyMTextBackground(MText, double paddingRatio)`：不再补宽度 / 高度，只置背景标志（bit0+bit1）、`BackgroundColor`、`BackgroundScale`；**绝不碰 `RectangleWidth`**。（本节原写的单参数签名是中间态，见 §9.6。）
 
 **修完的实测**：受控图上 `MTEXT OVER LINES` 恢复成一行（修复前被拆成两行）；出图里它背后的横线被背景干净切断——说明原生背景本来就有效，之前"必须补 41"的判断是错的。
 
@@ -248,8 +263,8 @@ ClassVersion= 1
 ### 5.3 块内文字改为写进块定义（`Rules/TextMaskRule.cs`）
 
 - 新增配置 `MaskInsideBlocks`（默认开）；
-- `Depth > 0` 不再无条件跳过，改为按配置处理；跳过 `*D`/`*T` 匿名块、外部参照、布局块；
-- 遮罩加进 `BlockRecord.Entities`，排在文字之前；`EntityScanner` 本身对每个块定义只遍历一次，不会按插入数重复加；
+- `Depth > 0` 不再无条件跳过，改为按配置处理；匿名块枚举为 `*D`（标注缓存）、`*T`（表）、`*U`（动态块匿名实例）：动态块 `*U` **现已支持但有限制**（复用宿主块定义与去重，不展开动态参数/夹点状态），外部参照与 `*D`/`*T` 仍为显式 Non-Goal；
+- 遮罩加进 `BlockRecord.Entities`，排在文字之前；`DatabaseWalker.CollectFrom` 用 `visited` 对每个块定义只遍历一次，不会按插入数重复加；
 - 预览备注写明"遮罩写进块定义「X」，直接引用 N 处"；
 - **块内文字跳过遮挡判定**：块定义里的文字会不会被压住，取决于每个插入插到哪、旁边画了什么，定义层面看不到。拿定义自身实体去判永远是"无遮挡"——这正是块内文字一个遮罩都加不上的原因。判不了就不判，按"宁可多加"处理，`MaxMasksPerDrawing` 兜底。
 
@@ -261,13 +276,13 @@ ClassVersion= 1
 
 | 项 | 结果 |
 |---|---|
-| 单元测试 | 212 个全过（`TextMaskRuleTests` 从 7 个改写为 10 个，锁的是新行为） |
+| 单元测试 | 212 个全过（历史轮次；`TextMaskRuleTests` 当时从 7 个改写为 10 个） |
 | 30250-001 | 匹配 304，改动 146（MTEXT 原生 142 / 标注 *D 4），跳过 158；输出无 Wipeout，`RectangleWidth` 全部保持 0 |
 | 受控测试图出图 | MTEXT 不再折行；TEXT / 标注的白色 Solid 能切断背后的横线；块内 MTEXT 背景有效 |
 
 ### 5.6 仍然没解决的（下一步）
 
-1. ~~**Wipeout 编码映射没解出来**~~ **已解出（见第 8 节）**：AutoCAD 把 WIPEOUT 的裁剪顶点当**图像像素坐标**，不是图形单位；原点在包围框最小角，像素边长取包围框长边，Y 轴翻转、顶点归一到 ±0.5。库层新增 `Wipeout.SetMaskingArea(IEnumerable<XY>)` 承担这段换算。
+1. **已解出（见第 8 节）**：AutoCAD 把 WIPEOUT 的裁剪顶点当**图像像素坐标**，不是图形单位；原点在包围框最小角，像素边长取包围框长边，Y 轴翻转、顶点归一到 ±0.5。库层新增 `Wipeout.SetMaskingArea(IEnumerable<XY>)` 承担这段换算。（历史：早期曾认为 Wipeout 编码映射没解出来，于第 8 节推翻）
 2. **块内 TEXT 的 Solid 位置略偏**：出图里遮罩框比文字框低约一个字高，会盖住文字的下一行。`TextBounds.ForText` 对块定义坐标系里的 `InsertPoint`/`AlignmentPoint` 取值需要复核（红/白对照实验可见）。
 3. **遮挡判定仍看不到块参照**：压在块参照上的模型空间文字仍被判"无遮挡"。`MaskIgnoreBlockBounds` 需要改成"展开块定义几何"而不是简单忽略。
 
@@ -276,10 +291,10 @@ ClassVersion= 1
 ## 6. 必须承认的未验证项
 
 
-1. ~~MTEXT 原生背景在出图里到底有没有白框，本次没能确认。~~ **已确认（2026-11-02 下午，修复后复核）**：不碰 `RectangleWidth` 时，原生背景在出图里能干净切断背后的横线（受控图 `MTEXT OVER LINES` 与块内 `BLOCK MTEXT` 两处都验证到）。所以"必须补 41 才画得出背景"这条旧结论是错的，补 41 只会换来折行。
-2. ~~**Wipeout 的正确编码模型没有完全解出来。**~~ **已解出**：旧模型对不上的原因是把裁剪顶点当成了图形单位。实际口径是"插入点=包围框最小角、U/V=长边、顶点=归一化像素坐标且 Y 翻转、`ClippingState=1`、image definition/reactor 句柄写 0"。实测 AutoCAD 读回 `340=0 / 360=0 / 280=1 / 71=2 / 91=5`，与原生 Wipeout 一致，出图能切断横线（8.1 节）。
+1. **已确认（2026-11-02 下午，修复后复核）**：不碰 `RectangleWidth` 时，原生背景在出图里能干净切断背后的横线（受控图 `MTEXT OVER LINES` 与块内 `BLOCK MTEXT` 两处都验证到）。所以"必须补 41 才画得出背景"这条旧结论是错的，补 41 只会换来折行。（历史：早期曾认为 MTEXT 原生背景在出图里能否看到白框未确认，2026-11-02 下午修复后复核推翻）
+2. **已解出**：旧模型对不上的原因是把裁剪顶点当成了图形单位。实际口径是"插入点=包围框最小角、U/V=长边、顶点=归一化像素坐标且 Y 翻转、`ClippingState=1`、image definition/reactor 句柄写 0"。实测 AutoCAD 读回 `340=0 / 360=0 / 280=1 / 71=2 / 91=5`，与原生 Wipeout 一致，出图能切断横线（8.1 节）。（历史：早期曾认为 Wipeout 的正确编码模型没有完全解出，于本节推翻）
 3. 诊断阶段（本报告 1–4 节）没有改动产品代码；5 节的修复是之后按"先修阻断级两项"的决策单独实施的。所有结论基于 `SampleDwg` 的 11 张图和 1 张受控测试图。
-4. **3.7 提出的"DIMTFILL 是否读得回来"已有答案：读得回来，且出图生效**（9.1 节）。`*D` 缓存块方案因此退役。MTEXT 偏移因子在宿主侧仍是"尽力而为"（9.5 节）。
+4. **3.7 提出的"DIMTFILL 是否读得回来"已有答案：读得回来，且出图生效**（9.1 节）。`*D` 缓存块方案因此退役。（MTEXT 偏移因子"尽力而为"的旧结论已由 §9.6 推翻，见 §9.6:453。）
 
 ---
 
@@ -309,6 +324,8 @@ accoreconsole 的两个坑（写在这里省得下次再踩）：
 
 ## 8. 接入 ACadSharp 修复版（2026-11-02）
 
+> **状态：§8 的「Auto 优先 Wipeout、探测不通过降级 Solid」已作废**（见 §9.2）。§8 的 ACadSharp 库层接入与渲染实验仍有效，但产品规则的降级路径从未落地。
+
 ### 源码改动
 
 本项目现在通过 `src/Jun.Cad.Batch.Core/Jun.Cad.Batch.Core.csproj` 项目引用使用本地克隆 `D:\Dev\CSharp\AutoCAD\ACadSharp-v3.8.35`（分支 `fix/wipeout-dxf-dwg-serialization`），不再用 NuGet 二进制。库层改动包括：
@@ -322,7 +339,7 @@ accoreconsole 的两个坑（写在这里省得下次再踩）：
 
 - ACadSharp 单体回归：AC1032 的 DXF 与 DWG `SingleWipeout` round-trip **2/2 通过**。
 - AutoCAD 2025 Core Console 读取库输出：`ssget` 检出 1 个 WIPEOUT，关键组码为 `340=0 / 360=0 / 280=1 / 71=2 / 91=5`。
-- 项目整套回归：**215/215 通过**；`Jun.Cad.Batch.sln` Rebuild **0 errors**。上游 ACadSharp 生成 67 条既有编译 warning（XML cref、nullable context、obsolete 等），产品项目自身没有构建错误。
+- 项目整套回归：**215/215 通过（历史轮次）**；`Jun.Cad.Batch.sln` Rebuild **0 errors**。上游 ACadSharp 生成 67 条既有编译 warning（XML cref、nullable context、obsolete 等），产品项目自身没有构建错误。
 - `preflight` 显示 Wipeout 写出链路通过（"DWG 往返一致（4 点多边形、clipping on、无 IMAGEDEF、WCS 包围盒 100×50）"），表格检查因未给含表格样图为"未测"，标注遮罩仍标记为静态降级。
 - 出图渲染：见 8.1，横线在遮罩内部被切断（像素级核对）。
 
@@ -332,7 +349,14 @@ accoreconsole 的两个坑（写在这里省得下次再踩）：
 
 **已解决（2026-11-02 晚）**：早先"线穿过遮罩"的图不是编码错误，是**绘制顺序**错误——测试图里先加 Wipeout 再加线，线后画就盖在遮罩上。把线放到遮罩之前（`Entities.Add(line)` 再 `Entities.Add(wipeout)`）重出图，横线在遮罩边界处被干净切断（见下节 8.1）。
 
-**仍需人工确认的只剩一件事**：交互式 AutoCAD 会话里的观感（屏幕上和打印预览）——本机只能跑 Core Console 无头出图，没有做界面截图。大批量处理前建议在副本上开一次图，核对 `(0 . "WIPEOUT")`、`DRAWORDER` 和肉眼效果。
+**仍需人工确认的只剩两件事**（2026-11-05 复核后收窄）：
+
+1. 交互式 AutoCAD 会话里的观感（屏幕上和打印预览）——本机只能跑 Core Console 无头出图，没有做界面截图。大批量处理前建议在副本上开一次图，核对 `(0 . "WIPEOUT")`、`DRAWORDER` 和肉眼效果。
+2. 含 `SORTENTSTABLE` 的图纸保存后 `DRAWORDER` 是否被重置（C01）：8.3 的受控图
+   `sortents= missing`，破坏性路径根本没被触发，既不能证明已修也不能证明安全。
+
+Core Console 侧的 `ssget` / `entget` / `-PLOT` 逐像素已在 **8.3 用修复后产物重跑完毕**，
+不再是「待人工确认」；`WIPEOUTFRAME` 仍为已知未修复项。
 
 ### 8.1 渲染验收（2026-11-02 晚，已完成）
 
@@ -351,7 +375,7 @@ accoreconsole 的两个坑（写在这里省得下次再踩）：
 1. "ACadSharp 写出的 Wipeout AutoCAD 不认" —— 错，是**几何编码**不对（像素坐标 vs 世界坐标、`ClippingState` 没开、image definition 句柄非 0）；
 2. "遮罩加了但看不见" —— 多半是**顺序**：遮罩必须先于被遮对象入图（`TextMaskRule` 的 `PlaceMaskBefore` 做的正是这件事）。
 
-### 8.2 边框问题（2026-11-02 晚，已缓解）
+### 8.2 边框问题（未修复，仅白色实体色规避）
 
 Wipeout 出图时会带一个矩形边框（`WIPEOUTFRAME` 默认 1 = 显示并打印），受控图里 `TEXT OVER LINES` 外面就套了一圈方框。
 
@@ -361,8 +385,41 @@ Wipeout 出图时会带一个矩形边框（`WIPEOUTFRAME` 默认 1 = 显示并�
 | 会话里 `(setvar "WIPEOUTFRAME" 0)` 再出图 | 边框消失、横线照样被切断 → 确认方框就是 Wipeout 边框 |
 | 遮罩实体颜色改成**真彩色白** | 边框画成白色、白纸上不可见；出图与"关掉边框"那张肉眼一致，`y=767` 行由源图的连续 `340–678` 变成 `524–678`（左半段被擦掉） |
 
-结论：擦除已验收；边框在上游修好前靠白色实体颜色规避（深色屏幕上仍能看见白色细框，已知限制）。
+结论：**擦除已验证，边框未修复**。写入 `70=0` 在 AutoCAD 2025 重开后仍为 `WIPEOUTFRAME=1`，白色实体色只在白底出图上让边框不可见，深色绘图区仍可见白色细框。需上游 DWG 写出器修复，产品侧无解。
 `WipeoutVariables` 那次写入保留——对 DXF 消费方是正确的，等上游修好后直接生效。
+
+### 8.3 修复后宿主复验（2026-11-05，已完成）
+
+审查 + 全量修复之后，用**当前代码的新产物**在 AutoCAD 2025 Core Console 上重跑了 `VERIFY.md` 的
+第 2–5 项。工作目录 `tmpv/hostverify-2026-11-05/`：
+`in/control.dwg`（受控源图，`tmpv/masktest/mask-src.dwg` 副本）→ CLI 用 `config.json` 生成
+`out/control.dwg`（日志：`共为 11 处文字加了遮罩（MTEXT 原生背景 4 / 标注文字 1 / Wipeout 6）`，
+`匹配 11，改动 11，跳过 0，失败 0`）。
+
+| 项 | 实测 | 判定 |
+|---|---|---|
+| `ssget "_X" '((0 . "WIPEOUT"))` | 5 个，句柄 `29B 2AF 2A8 2A3 2A0`；全部 `layer=_MASK / 71=2 / 91=5 / 280=1`；`entget` 回读 `340=nil / 360=nil`（影像定义句柄为 0） | 通过 |
+| 计数口径 | `tblnext "BLOCK"` + `entnext` 显示块定义 `TBLK` 内还有 1 个 WIPEOUT（`2B2`）和 1 个 MTEXT（`2B5`，`90=3 / 63=7 / 45=1.15`）。**`ssget "_X"` 不枚举块定义内部实体**，所以 CLI 的 `Wipeout 6 = 模型空间 5 + 块内 1`、`MTEXT 4 = 3 + 1`。这不是丢实体，恰好证明 `MaskInsideBlocks=true` 生效 | 澄清 |
+| MTEXT `entget` | 模型空间 3 个（`2AB / 2A6 / 29E`）全部 `g90=3 / g63=7 / g45=1.15 / g41=0.0` | 通过 |
+| DIMENSION `entget` | `((ACAD (1000 . DSTYLE) (1002 . {) (1070 . 140) (1040 . 3.5) (1070 . 69) (1070 . 1) (1002 . })))`：原有 `140/3.5` 保留，`69/1` 追加 → C03 的局部 DSTYLE 替换在宿主侧确认 | 通过 |
+| `-PLOT` 逐像素 | 源图 / 输出图 `EXTMIN/EXTMAX` 同为 `(0,0,0)/(330,74.7062,0)`，`_.ZOOM _E` 同口径。y=746–748 源图 `0–289` → 输出 `0–20 / 255–289`；全图暗像素 `56398 → 47669`，**`erased=8729 / added=0`**（只擦除、不新增黑块/边框像素） | 通过 |
+| `WIPEOUTFRAME` / `ACAD_WIPEOUT_VARS` | 重开仍为 `(WIPEOUTFRAME= 1)`、`(WIPEOUT_VARS_70= 1)`；`sortents= missing` | C11 未修；C01 未触发 |
+
+脚本与结果：`verify.scr`/`host-result.txt`、`blocks.scr`/`block-result.txt`、
+`detail.scr`/`detail-result.txt`、`plot-src.scr`/`host-plot-src.png`、`plot.scr`/`host-plot.png`、
+`extents.scr`/`extents-result.txt`；逐像素用 `tmpv/masktest/pngscan.py`。
+
+两个踩过的坑，留档：
+
+1. **`-PLOT` 的纸张尺寸参数必须传 `""`**：本机 AutoCAD 是中文版，硬编码
+   `"Sun Hi-Res (1600.00 x 1280.00 Pixels)"` 被判为无效纸张名，`-PLOT` 提前结束，
+   后续 `_L/_N/_E/...` 全被当成命令（报「未知命令 L/N/E/…」），PNG 根本不生成。
+2. **LISP 结果文件是 UTF-8，不是 UTF-16**：本次 `(open ... "w")` + `write-line` 写出来的是
+   纯 ASCII/UTF-8；按 UTF-16 解码会得到满屏汉字乱码。PowerShell 的 stdout 仍是 UTF-16/本地化乱码，
+   所以结论一律以结果文件为准。
+
+本次仍**不签发**：C01（本图无排序表，破坏性路径未触发）、C11（`WIPEOUTFRAME=1`）、
+C20、C21、以及交互式界面观感。严格签发范围见 `VERIFY.md`。
 
 ---
 
@@ -381,14 +438,16 @@ Wipeout 出图时会带一个矩形边框（`WIPEOUTFRAME` 默认 1 = 显示并�
 | 受控出图 | 同一张图两条横贯线：加了 `DIMTFILL=1` 的那条在 y=358 被文字切断（暗像素 `0-793` → 文字像素 794–806 → `807-1599`）；未加覆盖的对照标注在 y=342 连续 `0-1599` |
 | 真实图纸（30250-002） | 带覆盖的标注 **0 → 30**，覆盖键总数 **750 → 780**（每个标注只多一项，原有的 140 等键全部保留） |
 
-所以 `*D` 缓存块方案退役。旧方案往 AutoCAD 自动生成的缓存块里塞 Wipeout，标注重生成就全丢，而且 TEXT 那条分支会改句柄；`DIMTFILL` 是样式覆盖，跟着标注本身走，不新增实体、不改句柄、重生成保留。
+所以 `*D` 缓存块方案退役。旧方案往 AutoCAD 自动生成的缓存块里塞 Wipeout，标注重生成就全丢，而且 TEXT 那条分支会改句柄；`DIMTFILL` 是样式覆盖，跟着标注本身走，不新增实体、重生成保留；**默认配置下 `MaskBringTextToFront=true` 会把整个标注前置，标注获得新句柄**（见 §9.7:472）。
 
 两个实现细节，踩过坑才对：
 
-* 直接 `SetDimensionOverride(clone)` 会带出一条多余的 `340 = 0`（样式句柄），改成手写 `DxfClassMap`、只放组码 69；
-* `DxfClassMap` 要建在 `new DimensionStyle("*override")` 上（用无参构造会报 CS7036）。
+* 当前实现：`dimension.GetStyleOverrideMap()` 取已有覆盖 → `map.DxfProperties[69] = fill` → `dimension.SetStyleOverrideMap(map)`。早期试过的 `SetDimensionOverride(clone)` 会带出多余 `340=0` 已弃用；`new DimensionStyle("*override")` 从未进入产品代码。
+* 注：2026-11-05 审查发现 `SetStyleOverrideMap` 会清空段外 ACAD XData，已按 C03 修为局部替换。
 
 ### 9.2 2D Solid 移除
+
+> **当前唯一有效实现**：`TextMaskRule.RequireNativeMaskMode`（Auto/Wipeout 同义，Solid 与未知值硬错误）+ `MaskService.IsWipeoutEncoded`（自检失败直接抛）+ `MaskService.ApplyMTextBackground`（bit0+bit1）。
 
 5.2 那条"Wipeout 不可用就降级 Solid"的方案撤销了，代码里 `CreateSolid` / `MaskSolidColor` 一并删掉。理由：Solid 是不透明色块，只能靠"真彩色白 + 可打印图层"硬凑白底，`monochrome.ctb` 一类 CTB 会把它重映射成黑块——那不是遮罩，是另一块脏。现在只有一条主线：原生遮罩。
 
@@ -396,32 +455,34 @@ Wipeout 出图时会带一个矩形边框（`WIPEOUTFRAME` 默认 1 = 显示并�
 
 ### 9.3 默认值改成"默认给所有文字加遮罩"
 
+> 本节是默认值变更记录；MTEXT 背景标志的编码以 §9.6 为唯一准绳。
+
 | 字段 | 旧默认 | 新默认 |
 |---|---|---|
-| `MaskOnlyWhenOccluded` | `true`（只在有遮挡时加） | **`false`**（匹配上的都加） |
+| `MaskOnlyWhenOccluded` | `true`（只在有遮挡时加） | **`false`**（匹配上的都加；**该开关为实验性、结果不可靠**：`Insert` 整类几何未参与遮挡判定，块参照下的文字会被判为无遮挡，建议保持 `false`） |
 | `MaskInsideBlocks` | — | **`true`**（写进共享块定义，影响所有插入） |
 | `MaskRebuildText` | `false` | **`true`** |
 | `DimensionMaskMode` | `BlockInternal` | **`Native`**（`BlockInternal` 仍接受，同义） |
 | `DimensionTextMode` | `ExplicitOnly` | **`All`**（含测量值） |
 | `MaxMasksPerDrawing` | 2000 | **0 = 不限**（只有显式正数才生效） |
-| `EntityTypes` 未指定时 | — | `TEXT, MTEXT, ATTDEF, ATTRIB`（`DimensionMaskMode` 非 Off 时再加 `DIMENSION`） |
+| `EntityTypes` 未指定时 | — | `TEXT, MTEXT, ATTDEF, ATTRIB`（`DimensionTextMode` 非 Off 时再加 `DIMENSION`；原文误写为 `DimensionMaskMode`，2026-11-05 更正） |
 
-边界偏移改成**字高 × 比例**：`MaskPaddingRatio` 默认 `0.15`，每边张开 15% 字高（10 的字高 ⇒ ±1.5）。MTEXT 的原生偏移因子是 `1 + ratio = 1.15`；Wipeout 直接用 `height × ratio` 算几何。填色一律**图形背景色**：MTEXT 写 `BackgroundFillFlags.UseDrawingWindowColor`（bit1，不是 bit0 的显式 RGB），标注写 `DIMTFILL=1`，Wipeout 本身就是擦除到背景。
+边界偏移改成**字高 × 比例**：`MaskPaddingRatio` 默认 `0.15`，每边张开 15% 字高（10 的字高 ⇒ ±1.5）。MTEXT 的原生偏移因子是 `1 + ratio = 1.15`；Wipeout 直接用 `height × ratio` 算几何。填色一律**图形背景色**：MTEXT 写 `UseBackgroundFillColor | UseDrawingWindowColor`（bit0+bit1，DXF 90=3，并带 63/45 成套组码；**标志编码以 §9.6 为准**，只写 bit1 的 90=2 会被 AutoCAD 判为「没有遮罩」），标注写 `DIMTFILL=1`，Wipeout 本身就是擦除到背景。
 
 ### 9.4 本轮实测
 
 | 检查 | 结果 |
 |---|---|
 | 编译 | 0 warning / 0 error |
-| 单元测试（`JUN_CAD_SAMPLE_DWG` 指向真实海工图） | **291 passed / 0 skipped / 0 failed** |
-| 端到端（30250-002） | 匹配 195 = 改动 195 + 跳过 0，失败 0；明细 = MTEXT 原生背景 175 / 标注文字 15 / Wipeout 5 / 填充置后 6 |
+| 单元测试（`JUN_CAD_SAMPLE_DWG` 指向真实海工图） | **291 passed / 0 skipped / 0 failed（历史轮次，需外部 `JUN_CAD_SAMPLE_DWG`）** |
+| 端到端（30250-002） | 匹配 195 = 改动 195 + 跳过 0，失败 0；明细 = MTEXT 原生背景 175 / 标注文字 15 / Wipeout 5 / 填充置后 6（历史轮次 / 无效指标：该路径只计数、不改变输出文件，见 §9.7，不再作为成功证据） |
 | 输出图回读 | `mtext: 347 total, 175 with drawing-window mask, 0 with RectangleWidth>0`；`wipeout: 5, solid: 0`；`bad wipeout: 0`；`*D` 缓存块内 Wipeout 0 |
 
 ### 9.5 还剩的限制
 
-* **MTEXT 的偏移因子是"尽力而为"**：AutoCAD 只在 DXF 90 含 bit0（显式填充色）或 bit4（文字框）时才落盘组码 45。用图形背景色（90=2）时文件里根本没有 45，宿主按 1.0 紧包显示。我们没有为了绕开它去改 `RectangleWidth`——那正是实验 4 里把一行折成两行的坑。
-* **画在标注之上的几何仍会盖住文字背景**：`DIMTFILL` 只管标注自己那层，排序表在它之上的实体照样压过去。`MaskSendHatchToBack` 处理填充，别的几何要靠 `SortEntitiesTable`。
-* 交互式会话里的观感仍未人工确认（本机只有 Core Console 无头出图），同 8 节。
+* **该限制已消除（见 §9.6:453）**：因子丢失的真因是只写 bit1（90=2）导致 45/63 不落盘，改 bit0+bit1 后 AutoCAD 回读 `(45 . 1.15)`。（历史：早期曾认为 MTEXT 偏移因子在宿主侧只能"尽力而为"，于 §9.6 推翻。）
+* **画在标注之上的几何仍会盖住文字背景**：`DIMTFILL` 只管标注自己那层，排序表在它之上的实体照样压过去。`MaskSendHatchToBack` 处理填充，别的几何目前**没有可靠手段**（SORTENTS 排序表经 ACadSharp 写出后 AutoCAD 读不回，见 §9.7:470）；`MaskSendHatchToBack` 已于 2026-11-05 停用，见 C02。
+* 交互式会话的观感已在 §9.6:428 那次用户复查中部分确认（正是那次查出了 bit0 缺陷）；完整界面截图仍未做，列为 `VERIFY.md` 宿主门禁项。
 
 ### 9.6 补充：MTEXT 背景标志只写 bit1，AutoCAD 当"没有遮罩"（2026-11-02 晚）
 
@@ -450,9 +511,9 @@ Wipeout 出图时会带一个矩形边框（`WIPEOUTFRAME` 默认 1 = 显示并�
 * ACadSharp 回读：291 个 MTEXT `flags=3, scale=1.15`（因子第一次真正落盘）；标注 10/10 带 `DIMTFILL=1`；
 * AutoCAD 2025 entget 回读：`(90 . 3) (63 . 7) (45 . 1.15)`，标注 XData 末尾 `(1070 . 69) (1070 . 1)`、原有键全部保留。
 
-**连带修正**：9.5 里"MTEXT 偏移因子宿主侧尽力而为"的限制**不复存在**——因子丢失就是缺 bit0 的同一个 bug。
+**连带修正**：9.5 里"MTEXT 偏移因子宿主侧尽力而为"的限制**不复存在**——因子丢失就是缺 bit0 的同一个 bug。（历史：早期曾认为该因子在宿主侧只能"尽力而为"，于 §9.6 推翻。）
 
-仍未加遮罩的 26 个 MTEXT（该图）：13 个是 `PICT_OWNER` 块里的空文本 `{}`（无可见内容），8 个在嵌套超过 `MaxNestingDepth: 4` 的符号块里（过滤配置所致，调大深度即可覆盖）。
+（历史统计：26 个未加遮罩，其中 13 个空文本、8 个嵌套超深，其余 5 个当时未归类）具体为 `PICT_OWNER` 块里的空文本 `{}`（无可见内容），以及嵌套超过 `MaxNestingDepth: 8（项目默认；当时配置写 4）` 的符号块（过滤配置所致，调大深度即可覆盖）。
 
 
 ### 9.7 补充：绘图次序前置 + 遮罩框紧贴文字（2026-11-02 深）
@@ -462,8 +523,16 @@ Wipeout 出图时会带一个矩形边框（`WIPEOUTFRAME` 默认 1 = 显示并�
 **框宽问题（受控出图实测，AutoCAD 2025）**
 
 - AutoCAD 的 MTEXT 原生背景填充按**文字框宽度**（DXF 41）画：框 60、文字只要 ~6，横线擦除断口正好 60 个单位，字形像素孤零零嵌在里面——这就是截图里"一侧空白一大截"的来源；不设框宽（41=0）时本来就贴文字。
-- 修复：`MaskTextBox=Auto`（默认）——框宽 ≤ 实测文字宽 × 1.05 时保持原生；明显松时改用**紧贴 Wipeout**（估测文字宽度 + 15% 字高留白，`RectangleWidth` 绝不动，零折行风险）。`Native`/`Tight` 可强制。实测：框 100/文字 ~14，断口 ≈15.5 紧贴文字。
-- 旧版处理过的文件重跑会自动升级：原生背景标志被清掉、换紧贴遮罩。
+- 修复：`MaskTextBox=Auto`（默认）——框宽 ≤ 实测文字宽 × 1.05 时保持原生；明显松时改用**紧贴 Wipeout**（估测文字宽度 + 15% 字高留白，`RectangleWidth` 绝不动，零折行风险）。`Native`/`Tight` 可强制。实测：框 100/文字 ~14，断口 ≈15.5 紧贴文字。Auto 的分支依据是估算文字宽度（误差约 ±10%），框宽接近阈值时结果可能不稳定；需要确定性行为请显式指定 `Native` 或 `Tight`。
+- 旧版处理过的文件重跑时按「框宽 × MaskTextBox × 已有标志」分派，并非一律换成紧贴遮罩：
+
+| 框宽 vs 实测文字宽 | 已有 bit0 | Auto（默认） | Native | Tight |
+|---|---|---|---|---|
+| 41=0 或 ≤ 宽×1.05 | 无 | 补 bit0+bit1，保持原生背景 | 同 Auto | 清原生背景，换紧贴 Wipeout |
+| 41 > 宽×1.05 | 无 | 清原生背景，换紧贴 Wipeout | 补 bit0+bit1，保持原生背景（框宽留白） | 清原生背景，换紧贴 Wipeout |
+| 任意 | 有 | 判重跳过 | 判重跳过 | 判重跳过（`HasOverlappingWipeout` 命中亦跳过） |
+
+`RectangleWidth` 全程不动，零折行风险。
 
 **绘图次序问题（三个连锁发现）**
 
@@ -475,7 +544,76 @@ Wipeout 出图时会带一个矩形边框（`WIPEOUTFRAME` 默认 1 = 显示并�
 
 - "文字在先、线在后"的测试图：规则跑完集合顺序变成 `[LINE, MTEXT]`，出图横线在文字区被背景填充干净擦断（之前连续不断）。
 - 宽框测试图：擦除断口 ≈15.5 单位紧贴文字（框 100）。
-- 真实图纸 30250-005：296 处遮罩（MTEXT 289 原生 flags=3 + 2 紧贴 Wipeout + 标注 10/10 DIMTFILL=1 + 13 跳过），AutoCAD `entget` 实读 `(90 . 3) (63 . 7) (45 . 1.15)` 成套，标注 DSTYLE 原有键全保留、`(1070 . 69) (1070 . 1)` 追加成功。
+- 真实图纸 30250-005：（历史轮次记录：MTEXT 289 原生 flags=3 + 2 紧贴 Wipeout + 标注 10/10 DIMTFILL=1 + 13 跳过；原文字中的「296 处」与分项 301 不符，属当时统计口径差异，不可复算，保留原样仅作过程记录），AutoCAD `entget` 实读 `(90 . 3) (63 . 7) (45 . 1.15)` 成套，标注 DSTYLE 原有键全保留、`(1070 . 69) (1070 . 1)` 追加成功。
 - 幂等：同位置重复运行不再叠加 Wipeout（TEXT 与紧贴 MTEXT 都有判重）。
 
-**遗留**：排序表/块记录扩展字典写出不修的话，存量绘制顺序仍会在保存时重置（与遮罩无关的通病）；测试 301/301 通过。
+**遗留**：排序表/块记录扩展字典写出不修的话，存量绘制顺序仍会在保存时重置（与遮罩无关的通病）；测试基线（2026-11-07 实跑 `dotnet test tests/Jun.Cad.Batch.Tests`）：**327 total / 321 passed / 6 skipped / 0 failed**；6 个 Skip 全部来自缺外部样图的 `DwgSampleTests`。历史基线：2026-11-05 为 317 / 311 / 6，§10 新增 9 条几何回归，§10.1 再增 2 条旋转判重回归。宿主侧 `ssget` / `entget` / `-PLOT` 逐像素已于 2026-11-05 用修复后产物重跑，见 §8.3；`WIPEOUTFRAME=1` 与 C01 / C20 / C21 仍未解决。
+
+---
+
+## 10. 遮罩过大截断行线（2026-11-06）
+
+**现象**：用户截图（30250-003 的修订栏：B0/A0/REV. · DESCRIPTION · DATE）里，文字背后的背景块比字高出一倍，把表格的行分隔线擦断了。
+
+**根因（两处，都是尺寸口径问题，不是"留白配大了"）**
+
+1. **原生 MTEXT 背景填的不是字形，是行框**。AutoCAD 用 `DXF 41 × DXF 46` 当填充矩形：
+   41 是定义宽度，**46 是行框高度**。30250-003 实测 `h=2.04 / rectH=3.77 / BackgroundScale 1.15`
+   → 遮罩高 `3.77 × 1.15 = 4.34 = 2.13 × 字高`，而字形只有 `1.0`。多出来的 1.13 个字高
+   全部落在文字下方，正好压到下一行的分隔线上（该行 `195.165`，遮罩底 `194.79`）。
+   旧 `Auto` 只看**宽度**（`RectangleWidth > 实测宽 × 1.05`）决定要不要换紧贴 Wipeout，
+   所以"框宽贴文字"的单行 MTEXT 全部留在原生路径——遮罩必然过大。
+2. **Top/Bottom 对齐方向写反**。`AttachmentPoint` 是"插入点落在文字块的哪个角"：
+   Top* 文字在插入点**下方**（`dy = −h`）、Bottom* 在**上方**（`dy = 0`）。
+   旧实现在 MTEXT 分支里 Top 给 `0`、Bottom 给 `−h`，整整错开一个字高
+   （`TextBounds.ForText` 是对的，只有 MTEXT 抄反）。走紧贴 Wipeout 时会直接把框画到上一行。
+
+**修复**
+
+| 位置 | 改动 |
+|---|---|
+| `TextBounds.MTextAnchorOffset` | 新增，统一 MTEXT 的 `dx/dy`；修正 Top/Bottom 方向 |
+| `TextBounds.TextMaskVertices(tight)` | 高度改为**字形带** = 字高 + 下伸部（有 `g j p q y , ; ( ) [ ]` 才加 `0.25 × 字高`）；宽度用实测文字宽并以 DXF 41 为上限（折行文字不会算宽） |
+| `TextMaskRule` Auto 分支 | 单行且不折行的 MTEXT → 紧贴 Wipeout；多行/折行仍走原生（宿主排版的行数我们算不出来，硬造框会漏字） |
+| `TextMaskRule` 紧贴分支 | 已有**指定色**背景遮罩（bit0 开 / bit1 关）不转换，保留用户设置 |
+
+遮罩高度：`2.13 × 字高` → `1.30 × 字高`（无下伸）/ `1.55 × 字高`（有下伸）。
+
+**验收（AutoCAD 2025 `-PLOT` 逐像素，材料在 `tmpv/maskfix/`）**
+
+- 同一张 30250-003，同一份配置，只换产物：
+  | 出图横线 | 修复前断口 | 修复后断口 |
+  |---|---|---|
+  | y=513px | 63 px | 0 |
+  | y=619px | 67 px | 0 |
+  | y=724px | 110 / 300 / 129 px | 0 |
+- 几何回读（`probe2 mdump`）：`Issued for Review` 遮罩 `(922.767,213.492)-(944.868,216.142)`，
+  高 2.65 = 1.30 × 2.04，包住文字框 `(923.073,213.798)-(944.562,215.837)` 且四边留白 0.3；
+  `Issued for Inter-Disciplinary Check` 高比 1.55（多留 0.51 给 `p/y` 的下伸部）。
+- 端到端：30250-003 共 237 处（Wipeout 217 / 标注 20），匹配 238 = 改动 237 + 跳过 1，失败 0。
+- 单元测试：`325 total / 319 passed / 6 skipped / 0 failed`，新增 9 条几何回归
+  （1.3 倍字高、下伸留白、TopLeft 在插入点下方、BottomLeft 反之、多行/折行退回原生、显式 Native…）。
+
+**已知代价**：单行 MTEXT 现在会**新增 Wipeout 实体并把文字重排到最上层（句柄变化）**，
+和 TEXT 路径一样；`MaskTextBox=Native` 可退回"零新增实体"的旧行为（遮罩仍然偏大）。
+
+### 10.1 幂等补丁：旋转文字的遮罩重复运行会叠加（2026-11-07）
+
+§10 修复上线后发现：对已处理产物**重跑一次**，Wipeout 217 → 229（+12），
+`mdups` 全部重合对都是竖排文字（`E 99020mm` 这类 rot=90° 的 MTEXT）。
+
+**根因**：判重的旋转角取自 `Atan2(UVector.Y, UVector.X)`，但 Wipeout 的
+U/V 向量是**带尺寸的变换向量，不是方向**——实测竖排遮罩 `U=(20.58,0)`、
+`V=(0,20.58)`，旋转信息全在 clip 边界多边形里。于是旧实现对所有遮罩
+`RotationOf` 恒返回 0，而 target.Rotation = π/2，`SameBox` 的旋转比对
+永远不相等 → 旋转文字全部漏判，每跑一次叠一层。
+
+**修复**：`TextBounds.WipeoutCorners`（新增）把裁剪顶点变换回 WCS 真实角点；
+`RotationOf` 改取**第 0→1 条角点边的方向**（与 `CollectTargets` 给
+`target.Rotation` 的算法同源），UVector 仅作兜底。180° 同矩形由既有
+"模 π 比对"兜住。
+
+**验收**：
+- 幂等：对 `out-after` 重跑 → 改动 0 / 跳过 238 / 失败 0，Wipeout 保持 217。
+- 单元测试新增 2 条（327 total / 321 passed / 6 skipped / 0 failed）：
+  `旋转文字的遮罩重复运行不叠加`、`旋转角相差180度的遮罩判为同一个`。
