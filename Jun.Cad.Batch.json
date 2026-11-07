@@ -167,7 +167,8 @@
       "Type": "TextMask",
       "Enabled": false,
       // Omit EntityTypes to include TEXT / MTEXT / ATTDEF / ATTRIB / DIMENSION.
-      // Tables, multileaders, and dynamic anonymous-block text are not supported.
+      // Tables, multileaders, xrefs and *D / *T anonymous blocks are not supported.
+      // Dynamic *U instance blocks are traversed (with limits); see README.
       "Filter": {
         "Scope": "ModelAndLayouts"
       },
@@ -177,6 +178,8 @@
         // WIPEOUT naturally follows the drawing background. Existing true-color white
         // is only a frame workaround for white-paper plots, not the mask fill color.
         "MaskMode": "Auto",
+        // Experimental / unreliable: Insert geometry is entirely excluded from occlusion
+        // detection, so text under block references is judged unoccluded. Keep false (default).
         "MaskOnlyWhenOccluded": false,
         // Used only when MaskOnlyWhenOccluded is true.
         "MaskMinOccludedRatio": 0.05,
@@ -193,6 +196,9 @@
         "MaskTextBox": "Auto",
         // Move masked text and its mask to the top of the draw order so later-drawn
         // lines and hatches cannot cover them. The moved entity gets a new handle.
+        // NOTE: this switch only governs the MTEXT-native and DIMENSION paths.
+        // TEXT/ATTRIB/ATTDEF and the tight-WIPEOUT path are ALWAYS reordered (new
+        // handle) so the mask precedes the text, regardless of this setting.
         "MaskBringTextToFront": true,
         "MaskLayer": "_MASK",
         // WIPEOUT on a non-plottable layer cannot mask plotted output.
@@ -201,15 +207,18 @@
         "MaskRebuildText": true,
         // Shared block definitions affect every insert. Historical sample: 318 nested texts.
         "MaskInsideBlocks": true,
-        // Move overlapping hatches behind text so they cannot cover the masks.
-        "MaskSendHatchToBack": true,
+        // Deprecated: SORTENTS is not persisted; this switch never changed the output file. Kept false for compatibility.
+        "MaskSendHatchToBack": false,
         // All includes measurement text; ExplicitOnly restricts overrides; Off skips dimensions.
         "DimensionTextMode": "All",
         // Native = DIMTFILL=1 style override (drawing background color) on each dimension.
         // No new entities and it survives dimension regeneration. Legacy value BlockInternal
         // is accepted and means the same thing.
-        // MaxMasksPerDrawing is omitted: unlimited; only an explicit positive value limits masks.
-        "DimensionMaskMode": "Native"
+        "DimensionMaskMode": "Native",
+        // 0 = unlimited. Only an explicitly positive value caps masks per drawing, and the
+        // count includes masks already present before this run, so repeated runs are capped too.
+        // Kept explicit so the embedded template does not trigger the legacy-config migration warning.
+        "MaxMasksPerDrawing": 0
       }
     },
 

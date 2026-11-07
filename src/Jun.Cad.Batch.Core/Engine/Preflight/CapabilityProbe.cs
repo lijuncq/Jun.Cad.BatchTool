@@ -69,6 +69,7 @@ namespace Jun.Cad.Batch.Engine.Preflight
     /// 当前项目引用本地修复版 ACadSharp：探测检查多边形顶点、裁剪开关、零影像引用和 WCS 包围盒。
     /// 这可以捕获 API/序列化回归，但本身不代表出图渲染验证。AutoCAD 2025 Core Console
     /// 已另行确认修复版输出被识别为 WIPEOUT；视觉遮罩效果仍应以宿主出图验收为准。
+    /// 本探测仍非宿主渲染验收；生产路径的逐实体自检在 MaskRuntime.CreateWipeout。
     /// </summary>
     public static class CapabilityProbe
     {
@@ -180,6 +181,16 @@ namespace Jun.Cad.Batch.Engine.Preflight
                     {
                         result.Status = ProbeStatus.Failed;
                         result.Detail = string.Format("WCS 包围盒不一致：回读 {0}（应为 (0,0)-(100,50)）", bounds);
+                        return Finish(result, watch);
+                    }
+
+                    // 与生产路径共用同一个判据：MaskRuntime.CreateWipeout 对每个 Wipeout
+                    // 都调 IsWipeoutEncoded。probe 额外的轴对齐/包围盒断言不代表生产保证。
+                    string reason;
+                    if (!MaskService.IsWipeoutEncoded(one, out reason))
+                    {
+                        result.Status = ProbeStatus.Failed;
+                        result.Detail = "Wipeout 编码自检失败：" + reason;
                         return Finish(result, watch);
                     }
 

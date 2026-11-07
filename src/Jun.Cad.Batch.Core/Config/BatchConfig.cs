@@ -674,14 +674,22 @@ namespace Jun.Cad.Batch.Config
 
         /// <summary>
         /// How the MTEXT mask box is sized (default Auto).
-        /// AutoCAD fills the native MTEXT background across the whole text frame
-        /// (DXF 41), so a frame wider than the text leaves blank mask on one side.
-        /// Auto keeps the native background when the frame matches the text and
-        /// switches to a tight WIPEOUT when the frame is visibly looser.
-        /// Native always uses the native background (frame-wide). Tight always
-        /// uses a WIPEOUT sized from estimated text extents.
+        ///
+        /// AutoCAD's native MTEXT background fills the whole **text frame**: width from
+        /// DXF 41, height from DXF 46 (the line box, measured 1.85 × character height),
+        /// then multiplied by BackgroundScale 1.15 — a mask 2.13 × the character height,
+        /// while the glyphs are 1.0. In a table that extra height lands on the row
+        /// separator lines and erases them (30250-003: mask bottom 194.79 vs row line
+        /// 195.165). The frame width is not the main problem; the height is.
+        ///
+        /// Auto therefore uses a tight WIPEOUT for **single-line** MTEXT (glyph band +
+        /// padding, 1.30 × character height, 1.55 with descenders) and keeps the native
+        /// background for multi-line or wrapped text, where the real line count is decided
+        /// by the host and a hand-built box would leave the last line unmasked.
+        /// Native always uses the native background (loosest, zero new entities).
+        /// Tight always uses a WIPEOUT sized from estimated text extents.
         /// </summary>
-        [RuleField(Label = "遮罩框模式", Editor = RuleFieldEditor.Enum, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 612, Values = "Auto=框宽贴文字才用原生（默认）;Native=始终原生背景;Tight=始终紧贴文字", Help = "Default Auto: MTEXT native background covers the whole text frame; when the frame is wider than the text the mask becomes a tight WIPEOUT instead (no reflow: RectangleWidth is never changed). Native keeps the native background even when loose. Tight always uses a WIPEOUT sized from estimated text extents.")]
+        [RuleField(Label = "遮罩框模式", Editor = RuleFieldEditor.Enum, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 612, Values = "Auto=单行 MTEXT 用紧贴 Wipeout（默认）;Native=始终原生背景;Tight=始终紧贴文字", Help = "Default Auto: single-line MTEXT gets a tight WIPEOUT sized to the glyph band (1.30 × character height) because the native background fills the whole line box (1.85 × character height) and erases neighbouring row lines; multi-line or wrapped MTEXT keeps the native background. Native always uses the native background. Tight always uses a WIPEOUT sized from estimated text extents. RectangleWidth/RectangleHeight are never changed (no reflow).")]
         [JsonProperty("MaskTextBox")]
         public string MaskTextBox { get; set; }
 
@@ -690,7 +698,7 @@ namespace Jun.Cad.Batch.Config
         /// Implemented by re-appending the entities at the end of their container,
         /// so the moved entity receives a new handle.
         /// </summary>
-        [RuleField(Label = "文字前置", Editor = RuleFieldEditor.Toggle, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 613, Help = "Default true: masked text and its mask are moved to the top of the draw order so later-drawn lines and hatches cannot cover them. The moved entity gets a new handle. Dimensions are moved too, so their text background is not crossed by later geometry.")]
+        [RuleField(Label = "文字前置", Editor = RuleFieldEditor.Toggle, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 613, Help = "Default true: masked text and its mask are moved to the top of the draw order so later-drawn lines and hatches cannot cover them. The moved entity gets a new handle. Dimensions are moved too, so their text background is not crossed by later geometry. This switch only governs the MTEXT-native and DIMENSION paths; TEXT/ATTRIB/ATTDEF and the tight-WIPEOUT path are always reordered (new handle) so the mask precedes the text.")]
         [JsonProperty("MaskBringTextToFront")]
         public bool? MaskBringTextToFront { get; set; }
 
@@ -705,7 +713,7 @@ namespace Jun.Cad.Batch.Config
         public double? MaskMinOccludedRatio { get; set; }
 
         /// <summary>
-        /// 块参照的包络盒是否参与遮挡判定（默认 false = 不参与）。
+        /// 块参照的包络盒是否参与遮挡判定（配置字段默认 true = 忽略；换算后的「是否参与」默认 false）。
         ///
         /// 块参照的包围盒是**包络**：一个只画了一根管的设备块，包络可能覆盖半张图。
         /// 用它判遮挡会把整片文字都判成"被压住"，所以默认只看块内实体、不看块参照整体。
@@ -728,13 +736,12 @@ namespace Jun.Cad.Batch.Config
         public bool? MaskInsideBlocks { get; set; }
 
         /// <summary>
-        /// 加遮罩时把"盖住文字的填充"送到绘制顺序最底层（默认 true）。
-        ///
-        /// 遮罩要么是 MTEXT 背景、要么在标注的 *D 块里，都跟着文字的绘制位置走。
-        /// 填充如果排在文字之后（排序表里 sort handle 更大 = 画在上面），
-        /// 遮罩会被填充整块盖住——图上看着和"没加遮罩"一模一样，而数据里明明有。
+        /// 已停用（默认 false）。原实现通过 SORTENTS 排序表把遮挡文字的填充置后，
+        /// 但 ACadSharp 写出的块记录扩展字典 AutoCAD 读不回，排序表不落盘——
+        /// 该开关只计数、从未改变输出文件。仅为兼容旧配置保留，显式写 true 也不产生文件变更。
+        /// 绘制顺序由 <see cref="MaskBringTextToFront"/> 负责。
         /// </summary>
-        [RuleField(Label = "填充置后", Editor = RuleFieldEditor.Toggle, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 645, Help = "默认是：把盖住文字的填充送到绘制顺序最底层。关掉时若填充画在文字之上，遮罩会被填充盖住、看不见")]
+        [RuleField(Label = "填充置后", Editor = RuleFieldEditor.Toggle, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 645, Help = "已停用，默认 false：SORTENTS 排序表不落盘，原实现只计数、不改变输出文件；显式写 true 也不产生文件变更")]
         [JsonProperty("MaskSendHatchToBack")]
         public bool? MaskSendHatchToBack { get; set; }
 
@@ -744,7 +751,7 @@ namespace Jun.Cad.Batch.Config
         public string MaskLayer { get; set; }
 
         /// <summary>Whether the WIPEOUT layer is plottable (default true).</summary>
-        [RuleField(Label = "遮罩图层可打印", Editor = RuleFieldEditor.Toggle, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 680, Help = "Default true: WIPEOUT on a non-plottable layer has no effect in plotted output. MTEXT background uses the text's own layer.")]
+        [RuleField(Label = "遮罩图层可打印", Editor = RuleFieldEditor.Toggle, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 680, Help = "Default true: WIPEOUT on a non-plottable layer has no effect in plotted output. MTEXT background uses the text's own layer. 对已存在的 _MASK 图层同样生效（老版本曾默认 false，会按本配置纠正）。")]
         [JsonProperty("MaskLayerPlottable")]
         public bool? MaskLayerPlottable { get; set; }
 
@@ -765,12 +772,12 @@ namespace Jun.Cad.Batch.Config
         /// The override lives in the entity's DSTYLE XData and survives dimension regeneration.
         /// Legacy value "BlockInternal" is accepted and treated as Native.
         /// </summary>
-        [RuleField(Label = "标注遮罩模式", Editor = RuleFieldEditor.Enum, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 697, Values = "Off=不处理;Native=标注背景填充（默认）", Help = "Default Native: writes a DIMTFILL=1 (drawing background color) style override on each dimension. No new entities, no handle changes, survives regeneration. Legacy value BlockInternal is accepted and means the same thing. Off skips dimension text entirely.")]
+        [RuleField(Label = "标注遮罩模式", Editor = RuleFieldEditor.Enum, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 697, Values = "Off=不处理;Native=标注背景填充（默认）", Help = "Default Native: writes a DIMTFILL=1 (drawing background color) style override on each dimension. No new entities, the dimension itself gets a new handle when MaskBringTextToFront (default on) reorders it, survives regeneration. Legacy value BlockInternal is accepted and means the same thing. Off skips dimension text entirely.")]
         [JsonProperty("DimensionMaskMode")]
         public string DimensionMaskMode { get; set; }
 
-        /// <summary>No mask limit by default; only an explicitly positive value imposes a limit.</summary>
-        [RuleField(Label = "单图遮罩上限", Editor = RuleFieldEditor.Integer, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 690, Help = "Default unlimited. Only a positive value limits masks; omitted, zero, and negative values are unlimited.")]
+        /// <summary>No mask limit by default; only an explicitly positive value imposes a limit. 统计包含本次执行前图纸中已有的遮罩，对同一输出文件重复运行也成立。</summary>
+        [RuleField(Label = "单图遮罩上限", Editor = RuleFieldEditor.Integer, AppliesTo = "TextMask", Group = RuleFieldGroup.Action, Order = 690, Help = "Default unlimited. Only a positive value limits masks; omitted, zero, and negative values are unlimited. 统计包含执行前已有的遮罩，重复运行同一输出文件同样有效。")]
         [JsonProperty("MaxMasksPerDrawing")]
         public int? MaxMasksPerDrawing { get; set; }
 

@@ -204,9 +204,54 @@ namespace Jun.Cad.Batch.Config
             // 保证内置规则已注册（幂等），这样"规则类型是否已注册"的校验在任何调用路径下都准确
             RuleFactory.RegisterBuiltIns();
 
+            MigrateTextMaskDefaults(config, warnings);
+
             DetectUnknownFields(json, config, warnings);
             Validate(config, warnings);
             return config;
+        }
+
+        /// <summary>
+        /// 旧配置（Version &lt;= 1）里 TextMask 的关键字段缺失时会静默继承新默认值，
+        /// 用户看不出升级前后行为的巨大差异。这里把当前默认值写成**显式值**并告警，
+        /// 让变化可追溯、可回滚；已显式写过值的键一律不动。
+        /// </summary>
+        private static void MigrateTextMaskDefaults(BatchConfig config, List<string> warnings)
+        {
+            if (config == null || config.Version > 1 || config.Rules == null || warnings == null)
+            {
+                return;
+            }
+
+            foreach (RuleConfig rule in config.Rules)
+            {
+                if (rule == null || !string.Equals(rule.Type, "TextMask", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                RuleAction action = rule.Action ?? (rule.Action = new RuleAction());
+                var added = new List<string>();
+
+                if (!action.MaskOnlyWhenOccluded.HasValue) { action.MaskOnlyWhenOccluded = false; added.Add("MaskOnlyWhenOccluded=false"); }
+                if (!action.MaskInsideBlocks.HasValue) { action.MaskInsideBlocks = true; added.Add("MaskInsideBlocks=true"); }
+                if (!action.MaskRebuildText.HasValue) { action.MaskRebuildText = true; added.Add("MaskRebuildText=true"); }
+                if (string.IsNullOrWhiteSpace(action.DimensionTextMode)) { action.DimensionTextMode = "All"; added.Add("DimensionTextMode=All"); }
+                if (string.IsNullOrWhiteSpace(action.DimensionMaskMode)) { action.DimensionMaskMode = "Native"; added.Add("DimensionMaskMode=Native"); }
+                if (!action.MaxMasksPerDrawing.HasValue) { action.MaxMasksPerDrawing = 0; added.Add("MaxMasksPerDrawing=0"); }
+                if (!action.MaskSendHatchToBack.HasValue) { action.MaskSendHatchToBack = false; added.Add("MaskSendHatchToBack=false"); }
+
+                if (added.Count == 0)
+                {
+                    continue;
+                }
+
+                warnings.Add(string.Format(
+                    "规则「{0}」是旧版配置（Version<=1），已补齐 TextMask 显式默认值：{1}。"
+                    + "旧默认 → 新默认的行为差异见 README「旧配置升级后的行为变化清单」；"
+                    + "要回滚就把对应旧值显式写回 Action。",
+                    rule.Name, string.Join("、", added)));
+            }
         }
 
         /// <summary>结构校验：必填项、取值范围、规则类型是否已注册。</summary>

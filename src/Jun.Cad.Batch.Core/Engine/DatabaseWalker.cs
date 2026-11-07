@@ -65,9 +65,12 @@ namespace Jun.Cad.Batch.Engine
     ///   * 深度由配置 <c>MaxNestingDepth</c> 控制，队列比递归好截断；
     ///   * 自引用/循环引用（块 A 里插块 A）不会把栈打爆。
     ///
-    /// 不进入的容器（与 AutoCAD 版策略一致）：
+    /// 不进入的容器：
     ///   * 外部参照（<see cref="BlockTypeFlags.XRef"/> / <see cref="BlockTypeFlags.XRefOverlay"/>）——不允许改别人的图；
-    ///   * 匿名块（<see cref="BlockRecord.IsAnonymous"/>，典型是动态块的 *U 实例块）——按"动态块边界"跳过。
+    ///   * 匿名块中的 *D（标注缓存）/ *T（表格）——由宿主重建，改了也会被覆盖。
+    ///
+    /// 动态块的 *U 匿名实例块**会进入**：它含真实显示的文字，跳过会让动态块文字漏加遮罩。
+    /// 见 <see cref="IsDynamicInstanceBlock"/>；visited 保证同一块定义只进队一次。
     /// </summary>
     public static class DatabaseWalker
     {
@@ -165,7 +168,8 @@ namespace Jun.Cad.Batch.Engine
                         continue;
                     }
 
-                    // TableEntity 继承 Insert，但它的 Block 是匿名块，下面的 IsAnonymous 判定会跳过
+                    // TableEntity 继承 Insert，但它的 Block 是匿名块（*T / *D，由宿主重建）；
+                    // 这类块仍按下面的判定跳过，*U 动态实例块则放行。
                     var ins = ent as Insert;
                     if (ins == null)
                     {
@@ -178,7 +182,15 @@ namespace Jun.Cad.Batch.Engine
                         continue;
                     }
 
-                    if (nested.IsAnonymous || IsExternalReference(nested))
+                    if (IsExternalReference(nested))
+                    {
+                        continue;
+                    }
+
+                    // 匿名块里 *U 是动态块的实例块：它含真实显示的文字，应参与遍历。
+                    // *D（标注缓存）/ *T（表）由宿主重建，改了也会被覆盖，继续跳过。
+                    // visited 保证同一块定义只进队一次（含动态块的多个实例）。
+                    if (nested.IsAnonymous && !IsDynamicInstanceBlock(nested))
                     {
                         continue;
                     }
@@ -251,6 +263,15 @@ namespace Jun.Cad.Batch.Engine
             int flags = (int)block.Flags;
             return (flags & (int)BlockTypeFlags.XRef) != 0
                    || (flags & (int)BlockTypeFlags.XRefOverlay) != 0;
+        }
+
+        /// <summary>动态块的匿名实例块（名字 *U 开头）。*D / *T 不算。</summary>
+        public static bool IsDynamicInstanceBlock(BlockRecord block)
+        {
+            return block != null
+                   && block.IsAnonymous
+                   && !string.IsNullOrEmpty(block.Name)
+                   && block.Name.StartsWith("*U", StringComparison.Ordinal);
         }
 
         /// <summary>是否是布局块（模型空间 / 图纸空间）。</summary>

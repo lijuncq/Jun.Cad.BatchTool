@@ -184,11 +184,12 @@ namespace Jun.Cad.Batch.Tests
     public class TextBoundsTests
     {
         [Fact]
-        public void 汉字按一个字高西文按零点六二()
+        public void 汉字按一个字高西文按兜底系数()
         {
             Assert.Equal(10, TextBounds.MeasureWidth("中", 10), 3);
             Assert.Equal(20, TextBounds.MeasureWidth("中文", 10), 3);
-            Assert.Equal(12.4, TextBounds.MeasureWidth("AB", 10), 3);
+            // 无样式兜底系数 = LatinWidthFactor (0.66)
+            Assert.Equal(13.2, TextBounds.MeasureWidth("AB", 10), 3);
         }
 
         [Fact]

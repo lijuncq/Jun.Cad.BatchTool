@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using ACadSharp;
+using ACadSharp.Entities;
+using ACadSharp.Tables;
 using Jun.Cad.Batch.Config;
 using Jun.Cad.Batch.Engine;
 using Xunit;
@@ -211,6 +214,164 @@ namespace Jun.Cad.Batch.Tests
                 Assert.Equal(before, session.Document.ModelSpace.Entities.Count);
                 Assert.Equal(0, summary.TotalChanged);
             }
+        }
+
+        /// <summary>
+        /// R04 指出的窄缺口：此前没有任何用例把 TextMask 跑在**真实 DWG**上、写盘、再回读，
+        /// 断言遮罩状态仍然在。库层单体 round-trip 不能替代这条链路（宿主渲染另见 VERIFY.md）。
+        /// </summary>
+        [SampleDwgFact]
+        public void TextMask在真实图上写盘回读后遮罩仍在()
+        {
+            string dir = TestPaths.NewTempDirectory("textmask-roundtrip");
+            string target = Path.Combine(dir, "out.dwg");
+
+            var config = new BatchConfig
+            {
+                Rules = new List<RuleConfig>
+                {
+                    new RuleConfig
+                    {
+                        Name = "文字遮罩",
+                        Type = "TextMask",
+                        Filter = new RuleFilter { Scope = "ModelOnly" },
+                        Action = new RuleAction
+                        {
+                            MaskMode = "Auto",
+                            MaskLayer = "_MASK",
+                            MaskOnlyWhenOccluded = false,
+                            MaskInsideBlocks = true,
+                            MaskRebuildText = true,
+                            MaskSendHatchToBack = false,
+                            DimensionTextMode = "All",
+                            DimensionMaskMode = "Native",
+                            MaxMasksPerDrawing = 0
+                        }
+                    }
+                }
+            };
+
+            try
+            {
+                int before;
+                int changed;
+
+                using (CadFileSession session = CadFileSession.Open(TestPaths.FirstSample(), null))
+                using (BatchLogger log = SilentLogger())
+                {
+                    before = CountMaskIndicators(session.Document);
+
+                    var runner = new BatchRunner(config, null, log, new ResourceLocator());
+                    BatchRunSummary summary = runner.Run(session.Document);
+                    changed = summary.TotalChanged;
+
+                    Assert.True(changed > 0, "真实样图上应至少有文字可加遮罩");
+                    Assert.True(CountMaskIndicators(session.Document) > before,
+                        "规则执行后内存模型里就应能看到新增遮罩");
+                    session.Save(target, false);
+                }
+
+                Assert.True(File.Exists(target), "TextMask 结果应已写盘");
+
+                using (CadFileSession back = CadFileSession.Open(target, null))
+                {
+                    int after = CountMaskIndicators(back.Document);
+                    Assert.True(after > before,
+                        string.Format("回读后遮罩应仍在：写盘前 {0} → 回读 {1}（本次改动 {2}）",
+                            before, after, changed));
+
+                    // 原生背景必须是 bit0+bit1 成套；只写 bit1（90=2）会被 AutoCAD 判为没有遮罩。
+                    Assert.Contains(AllEntities(back.Document).OfType<MText>(),
+                        m => (m.BackgroundFillFlags & BackgroundFillFlags.UseBackgroundFillColor) != 0
+                          && (m.BackgroundFillFlags & BackgroundFillFlags.UseDrawingWindowColor) != 0);
+
+                    _output.WriteLine("遮罩计数 {0} → {1}（规则改动 {2}）", before, after, changed);
+                }
+            }
+            finally
+            {
+                TestPaths.TryDelete(dir);
+            }
+        }
+
+        /// <summary>模型空间 + 全部块定义（含块内文字），每个块记录只算一次。</summary>
+        private static List<Entity> AllEntities(CadDocument doc)
+        {
+            var blocks = new List<BlockRecord>();
+            if (doc.ModelSpace != null)
+            {
+                blocks.Add(doc.ModelSpace);
+            }
+
+            foreach (BlockRecord block in doc.BlockRecords)
+            {
+                bool duplicate = false;
+                foreach (BlockRecord known in blocks)
+                {
+                    if (ReferenceEquals(known, block))
+                    {
+                        duplicate = true;
+                        break;
+                    }
+                }
+
+                if (!duplicate && block != null)
+                {
+                    blocks.Add(block);
+                }
+            }
+
+            var entities = new List<Entity>();
+            foreach (BlockRecord block in blocks)
+            {
+                entities.AddRange(block.Entities);
+            }
+
+            return entities;
+        }
+
+        /// <summary>本规则会产出的三类遮罩各算一处，用于写盘前后的粗计数。</summary>
+        private static int CountMaskIndicators(CadDocument doc)
+        {
+            int count = 0;
+            foreach (Entity entity in AllEntities(doc))
+            {
+                if (entity is Wipeout)
+                {
+                    count++;
+                    continue;
+                }
+
+                var mtext = entity as MText;
+                if (mtext != null)
+                {
+                    if ((mtext.BackgroundFillFlags & BackgroundFillFlags.UseBackgroundFillColor) != 0)
+                    {
+                        count++;
+                    }
+
+                    continue;
+                }
+
+                var dimension = entity as Dimension;
+                if (dimension != null && dimension.HasStyleOverride)
+                {
+                    try
+                    {
+                        DxfClassMap map = dimension.GetStyleOverrideMap();
+                        if (map != null && map.DxfProperties.ContainsKey(69))
+                        {
+                            count++;
+                        }
+                    }
+                    catch
+                    {
+                        // 真实图纸里可能有宿主私有的 DSTYLE 记录，解析不了就不计入
+                    }
+                }
+            }
+
+            return count;
         }
     }
 }

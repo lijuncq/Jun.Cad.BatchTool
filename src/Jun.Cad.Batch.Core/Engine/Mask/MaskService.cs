@@ -328,12 +328,8 @@ namespace Jun.Cad.Batch.Engine
             var placeholder = new Point(new XYZ(0, 0, 0));
 
             space.Entities.Remove(second);
-            if (first != null && first.Owner == space.Owner)
-            {
-                // 遮罩还没进集合：先摘文字再摘它没有意义，但它必须排在文字之前，
-                // 所以也在占位之后、文字之前加入。
-                space.Entities.Remove(first);
-            }
+            // first（遮罩）是新建实体，尚未加入集合，无需 Remove；
+            // 只有 second（文字）需要摘出以触发 HashSet 的槽位复用。
 
             space.Entities.Add(placeholder);
             if (first != null)

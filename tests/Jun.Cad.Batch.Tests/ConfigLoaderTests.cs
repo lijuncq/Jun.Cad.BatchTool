@@ -231,8 +231,12 @@ namespace Jun.Cad.Batch.Tests
             Assert.True(JToken.DeepEquals(custom, back.Action.Extra["Custom"]));
         }
 
+        /// <summary>
+        /// 旧配置（Version<=1、缺全部 TextMask 新字段）加载时要补齐显式默认值，
+        /// 并**只**多出一条迁移告警；退役字段 0 与无关的 Extra 仍不产生额外告警。
+        /// </summary>
         [Fact]
-        public void TextMask_ZeroLegacyPaddingAndUnrelatedExtrasRemainSilent()
+        public void TextMask_LegacyConfigGetsExplicitDefaultsAndOneMigrationWarning()
         {
             string path = WriteConfig(@"{
   ""Rules"": [{ ""Name"": ""mask"", ""Type"": ""TextMask"",
@@ -240,9 +244,22 @@ namespace Jun.Cad.Batch.Tests
 }");
             BatchConfig config = ConfigLoader.Load(path, out var warnings);
 
-            Assert.Empty(warnings);
-            Assert.Equal(0, config.Rules[0].Action.Extra["MaskPadding"].Value<int>());
-            Assert.True(config.Rules[0].Action.Extra["Custom"].Value<bool>());
+            string migration = Assert.Single(warnings);
+            Assert.Contains("已补齐 TextMask 显式默认值", migration);
+            Assert.Contains("MaskSendHatchToBack=false", migration);
+
+            RuleAction action = config.Rules[0].Action;
+            Assert.Equal(false, action.MaskOnlyWhenOccluded);
+            Assert.Equal(true, action.MaskInsideBlocks);
+            Assert.Equal(true, action.MaskRebuildText);
+            Assert.Equal("All", action.DimensionTextMode);
+            Assert.Equal("Native", action.DimensionMaskMode);
+            Assert.Equal(0, action.MaxMasksPerDrawing);
+            Assert.Equal(false, action.MaskSendHatchToBack);
+
+            // 退役字段与无关 Extra 原样保留，且不产生各自的告警
+            Assert.Equal(0, action.Extra["MaskPadding"].Value<int>());
+            Assert.True(action.Extra["Custom"].Value<bool>());
         }
 
         [Theory]
@@ -360,7 +377,10 @@ namespace Jun.Cad.Batch.Tests
             Assert.Equal(0.15, rule.Action.MaskPaddingRatio);
             Assert.Equal("All", rule.Action.DimensionTextMode);
             Assert.Equal("Native", rule.Action.DimensionMaskMode);
-            Assert.Null(rule.Action.MaxMasksPerDrawing);
+            // 模板必须把所有会触发 MigrateTextMaskDefaults 的键写成显式值，
+            // 否则内置模板自身就会冒出「旧版配置」升级告警（Assert.Empty(warnings) 失败）。
+            Assert.Equal(0, rule.Action.MaxMasksPerDrawing);
+            Assert.Equal(false, rule.Action.MaskSendHatchToBack);
             Assert.Null(rule.Action.Extra);
         }
 

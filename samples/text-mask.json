@@ -21,9 +21,12 @@
         "MaskLayerPlottable": true,
         "MaskRebuildText": true,
         "MaskInsideBlocks": true,
-        "MaskSendHatchToBack": true,
+        // Deprecated: SORTENTS is not persisted; this switch never changed the output file. Kept false for compatibility.
+        "MaskSendHatchToBack": false,
         "DimensionTextMode": "All",
-        "DimensionMaskMode": "Native"
+        "DimensionMaskMode": "Native",
+        // 0 = unlimited; kept explicit so this sample does not trigger the legacy-config migration warning.
+        "MaxMasksPerDrawing": 0
       }
     }
   ]

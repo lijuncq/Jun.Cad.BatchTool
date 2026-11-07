@@ -355,7 +355,7 @@ namespace Jun.Cad.Batch.Editing
                        + " 边界" + paddingPercent.ToString("0.###", CultureInfo.InvariantCulture) + "% × 字高"
                        + " 图形背景色"
                        + " 框" + textBox
-                       + (bringToFront ? " 文字前置" : "")
+                       + (bringToFront ? " 文字前置（仅 MTEXT 原生/标注）" : " 不前置（Wipeout 路径仍重排）")
                        + " 层 " + (string.IsNullOrWhiteSpace(a.MaskLayer) ? "_MASK" : a.MaskLayer.Trim());
             }
 

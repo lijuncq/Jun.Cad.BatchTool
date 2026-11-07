@@ -226,6 +226,28 @@ namespace Jun.Cad.Batch.Editing
                         "MaskTextBox must be Auto (default), Native, or Tight. Auto keeps the native background when the text frame fits the text and switches to a tight WIPEOUT when the frame is looser."));
                 }
 
+                // 运行期的两个 Normalize* 已改成白名单 + 硬错误，校验器必须同口径，
+                // 否则界面能保存、执行时才炸。
+                string dimMaskMode = NormalizeText(action.DimensionMaskMode);
+                if (dimMaskMode.Length > 0
+                    && !string.Equals(dimMaskMode, "off", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(dimMaskMode, "native", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(dimMaskMode, "blockinternal", StringComparison.OrdinalIgnoreCase))
+                {
+                    issues.Add(Error("Action.DimensionMaskMode",
+                        "DimensionMaskMode=\"" + action.DimensionMaskMode.Trim() + "\" 不受支持：可选 Off / Native（默认）；旧值 BlockInternal 按 Native 处理。"));
+                }
+
+                string dimTextMode = NormalizeText(action.DimensionTextMode);
+                if (dimTextMode.Length > 0
+                    && !string.Equals(dimTextMode, "all", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(dimTextMode, "explicitonly", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(dimTextMode, "off", StringComparison.OrdinalIgnoreCase))
+                {
+                    issues.Add(Error("Action.DimensionTextMode",
+                        "DimensionTextMode=\"" + action.DimensionTextMode.Trim() + "\" 不受支持：可选 All（默认）/ ExplicitOnly / Off。"));
+                }
+
                 if (action.MaskMinOccludedRatio.HasValue
                     && (action.MaskMinOccludedRatio.Value < 0 || action.MaskMinOccludedRatio.Value > 1))
                 {
@@ -247,6 +269,12 @@ namespace Jun.Cad.Batch.Editing
                         "Filter.EntityTypes excludes DIMENSION, so Action.DimensionTextMode={0} cannot affect dimension text. "
                         + "Add DIMENSION or omit EntityTypes to include all supported text (TEXT / MTEXT / ATTDEF / ATTRIB / DIMENSION).",
                         string.IsNullOrWhiteSpace(action.DimensionTextMode) ? "All" : action.DimensionTextMode.Trim())));
+                }
+
+                if (ConfigValues.Bool(action.MaskOnlyWhenOccluded, false))
+                {
+                    issues.Add(Warning("Action.MaskOnlyWhenOccluded",
+                        "MaskOnlyWhenOccluded 为实验性开关、结果不可靠：遮挡判定未纳入块参照（Insert）几何，0.05 面积比阈值与每条线 0.25 权重仍为启发式；建议保持 false（默认）。"));
                 }
             }
             else if (string.Equals(type, "DimTextAudit", StringComparison.OrdinalIgnoreCase))

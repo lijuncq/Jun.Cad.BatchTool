@@ -20,7 +20,18 @@
     <ProjectReference Include="..\..\..\ACadSharp-v3.8.35\src\ACadSharp\ACadSharp.csproj"
                       AdditionalProperties="LangVersion=preview" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!--
+      FontMetrics 用 GDI 实测 TrueType 字宽（仅 Windows 生效，包在 try/catch 里，
+      非 Windows 自动降级到查表/常量）。CA1416 是"该 API 仅 Windows 支持"的分析告警，
+      这里显式关掉，免得污染编译输出。
+    -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
   </ItemGroup>
+
+  <!-- CA1416：FontMetrics 里的 GDI 调用仅 Windows 可用，但都包了 try/catch 并降级，故关掉该告警 -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
 
   <!--
     默认配置模板：首次启动时写到 exe 旁边（ConfigLoader.EnsureDefaultConfig）。
